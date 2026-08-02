@@ -1,6 +1,8 @@
 import { multiaddr } from '@multiformats/multiaddr';
+import { multiaddr as multiaddrV13 } from '@multiformats/multiaddr-v13';
 import { generateHelixIdentity } from '../crypto/keys.js';
 import { createHelixNode } from '../node/createNode.js';
+import { createIpfsNode, type IpfsNode } from '../ipfs/node.js';
 import { MemoryStore } from '../store/memoryStore.js';
 import { MerkleMountainRange } from '../store/mmr.js';
 import { computeMerkleRoot } from '../store/merkle.js';
@@ -9,10 +11,10 @@ import { registerUser, genomeProofInput } from '../api/registerUser.js';
 import { createPost, SpamRejectedError, TAD_SIZE } from '../api/createPost.js';
 import { followUser } from '../api/follow.js';
 import { getSyncState } from '../api/query.js';
-import { fetchAndVerifyAttachment, toDataUrl } from '../api/attachment.js';
+import { fetchAndVerifyAttachment, fetchAndVerifyAttachmentFromIpfs, publishAttachmentToIpfs, toDataUrl } from '../api/attachment.js';
 import { SpacerRegistry } from '../moderation/spacerRegistry.js';
 import { verifyProofOfWork, REGISTRATION_DIFFICULTY_BITS } from '../crypto/pow.js';
-import { decodeGenesis, decodePost, decodeFollow, encodeGenesis } from '../node/messages.js';
+import { decodeGenesis, decodePost, decodeFollow, decodeIpfsAddr, encodeGenesis, encodeIpfsAddr } from '../node/messages.js';
 import { TOPICS } from '../node/pubsubTopics.js';
 import { calculate_entropy } from '../math/entropy.js';
 import { to_base4, from_base4 } from '../math/base4.js';
@@ -52,6 +54,7 @@ async function main() {
 
   const identity = await generateHelixIdentity();
   const node = await createHelixNode({ port, privateKey: identity.privateKey });
+  const ipfsNode: IpfsNode = await createIpfsNode();
   const store = new MemoryStore();
   const hlcClock = new HybridLogicalClock(node.peerId.toString());
   const spacerRegistry = new SpacerRegistry();
@@ -61,10 +64,12 @@ async function main() {
   for (const addr of node.getMultiaddrs()) {
     console.log(`[${name}] listening on: ${addr.toString()}`);
   }
+  console.log(`[${name}] IPFS PeerId: ${ipfsNode.libp2p.peerId.toString()} (separate node - see src/ipfs/node.ts)`);
 
   node.services.pubsub.subscribe(TOPICS.GENESIS);
   node.services.pubsub.subscribe(TOPICS.POSTS);
   node.services.pubsub.subscribe(TOPICS.FOLLOWS);
+  node.services.pubsub.subscribe(TOPICS.IPFS_ADDR);
 
   // the first OTHER peer's genome we observe - who this peer will follow in the demo
   let firstPeerGenome: string | undefined;
@@ -95,6 +100,17 @@ async function main() {
       }
       store.getFollowGraph().addFollow(follow.followerGenome, follow.followeeGenome);
       console.log(`[${name}] [FOLLOW] mirrored ${follow.followerGenome} -> ${follow.followeeGenome}`);
+    } else if (evt.detail.topic === TOPICS.IPFS_ADDR) {
+      const msg = decodeIpfsAddr(evt.detail.data);
+      if (msg.peerId === ipfsNode.libp2p.peerId.toString()) return; // ignore our own announcement
+      const dialable = msg.multiaddrs.find(
+        (addr) => addr.includes('127.0.0.1') && addr.includes('/tcp/') && !addr.includes('/ws'),
+      );
+      if (!dialable) return;
+      ipfsNode.libp2p
+        .dial(multiaddrV13(dialable))
+        .then(() => console.log(`[${name}] [IPFS] dialed peer's IPFS node at ${dialable}`))
+        .catch((err) => console.error(`[${name}] [IPFS] failed to dial peer's IPFS node: ${err.message}`));
     } else if (evt.detail.topic === TOPICS.POSTS) {
       const post = decodePost(evt.detail.data);
       const recomputedEntropy = calculate_entropy(post.content);
@@ -121,16 +137,30 @@ async function main() {
       if (post.attachment) {
         // the attachment's bytes never came over gossipsub - only this metadata did.
         // Independently fetch and verify them before trusting the content exists.
+        // Both transports are demonstrated side by side: generic URL fetch (existing)
+        // and real IPFS bitswap (additive, does not replace the URL path).
         fetchAndVerifyAttachment(post.attachment)
           .then((bytes) => {
             console.log(
-              `[${name}] [ATTACHMENT] verified ${post.attachment!.mimeType}, ${bytes.length} bytes, ` +
+              `[${name}] [ATTACHMENT-URL] verified ${post.attachment!.mimeType}, ${bytes.length} bytes, ` +
                 `hash=${post.attachment!.hashHex.slice(0, 16)}...`,
             );
           })
           .catch((err) => {
-            console.error(`[${name}] [ATTACHMENT-REJECTED] ${err.message}`);
+            console.error(`[${name}] [ATTACHMENT-URL-REJECTED] ${err.message}`);
           });
+
+        if (post.attachment.ipfsCid) {
+          fetchAndVerifyAttachmentFromIpfs(ipfsNode, post.attachment)
+            .then((bytes) => {
+              console.log(
+                `[${name}] [ATTACHMENT-IPFS] verified ${bytes.length} bytes via real bitswap, cid=${post.attachment!.ipfsCid}`,
+              );
+            })
+            .catch((err) => {
+              console.error(`[${name}] [ATTACHMENT-IPFS-REJECTED] ${err.message}`);
+            });
+        }
       }
 
       // mirror: buffer posts per genome, fold a TAD root into our own MMR the moment
@@ -163,6 +193,18 @@ async function main() {
   // give mDNS/dial a moment to establish the mesh before publishing
   await new Promise((resolve) => setTimeout(resolve, 3000));
 
+  // announce this peer's separate IPFS node so the other side can dial it directly
+  // (see TOPICS.IPFS_ADDR - mDNS auto-discovery between two independent Helia nodes
+  // proved unreliable, so the already-connected Helix gossipsub mesh signals instead)
+  await node.services.pubsub.publish(
+    TOPICS.IPFS_ADDR,
+    encodeIpfsAddr({
+      peerId: ipfsNode.libp2p.peerId.toString(),
+      multiaddrs: ipfsNode.libp2p.getMultiaddrs().map((addr) => addr.toString()),
+    }),
+  );
+  await new Promise((resolve) => setTimeout(resolve, 500));
+
   console.log(`[${name}] searching for a registration proof-of-work nonce (difficulty=${REGISTRATION_DIFFICULTY_BITS} bits)...`);
   const registerStart = Date.now();
   const { genome } = await registerUser(node, store, name);
@@ -190,6 +232,8 @@ async function main() {
         'referenced by hash.',
     );
     const attachmentMimeType = 'text/markdown';
+    const attachmentIpfsCid = await publishAttachmentToIpfs(ipfsNode, attachmentBytes);
+    console.log(`[${name}] published attachment to IPFS: cid=${attachmentIpfsCid}`);
 
     // create enough posts (TAD_SIZE + 1) to close the first TAD and open a second,
     // so the demo actually exercises an MMR fold. One post paraphrases KNOWN_MISINFO
@@ -204,7 +248,12 @@ async function main() {
             : `Hello Helix network, post #${i}! GF4 self-checksum sanity: ${gf4Checksum('ACGT')}`;
       const attachment =
         i === 5
-          ? { bytes: attachmentBytes, mimeType: attachmentMimeType, sourceUrl: toDataUrl(attachmentBytes, attachmentMimeType) }
+          ? {
+              bytes: attachmentBytes,
+              mimeType: attachmentMimeType,
+              sourceUrl: toDataUrl(attachmentBytes, attachmentMimeType),
+              ipfsCid: attachmentIpfsCid,
+            }
           : undefined;
       try {
         const post = await createPost(node, store, hlcClock, { authorGenome: genome.genome, content, attachment });

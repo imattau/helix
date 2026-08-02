@@ -30,6 +30,8 @@ export interface Attachment {
   mimeType: string;
   sizeBytes: number;
   sourceUrl: string;
+  /** Optional real-IPFS retrieval path, additive to sourceUrl — see src/ipfs/node.ts. */
+  ipfsCid?: string;
 }
 
 export interface Helix {

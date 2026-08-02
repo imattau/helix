@@ -30,8 +30,10 @@ export interface CreatePostOptions {
   authorGenome: string;
   content: string;
   parentPostId?: string;
-  /** Media/long-form content hosted outside the gossiped post - see src/api/attachment.ts. */
-  attachment?: { bytes: Uint8Array; mimeType: string; sourceUrl: string };
+  /** Media/long-form content hosted outside the gossiped post - see src/api/attachment.ts.
+   * `ipfsCid` is opt-in and passed through as-is if the caller already published to IPFS
+   * themselves (createPost stays IPFS-unaware, same as it never validates sourceUrl). */
+  attachment?: { bytes: Uint8Array; mimeType: string; sourceUrl: string; ipfsCid?: string };
 }
 
 export async function createPost(
@@ -52,6 +54,7 @@ export async function createPost(
     mimeType: opts.attachment.mimeType,
     sizeBytes: opts.attachment.bytes.length,
     sourceUrl: opts.attachment.sourceUrl,
+    ipfsCid: opts.attachment.ipfsCid,
   };
 
   const contentHash = computePostContentHash(opts.content, attachment);

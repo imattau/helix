@@ -23,6 +23,19 @@ export function decodeFollow(data: Uint8Array): Follow {
   return JSON.parse(new TextDecoder().decode(data)) as Follow;
 }
 
+export interface IpfsAddrMessage {
+  peerId: string;
+  multiaddrs: string[];
+}
+
+export function encodeIpfsAddr(msg: IpfsAddrMessage): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify(msg));
+}
+
+export function decodeIpfsAddr(data: Uint8Array): IpfsAddrMessage {
+  return JSON.parse(new TextDecoder().decode(data)) as IpfsAddrMessage;
+}
+
 /** Wire form of a post omits `contentHashBase4` - it's fully determined by `content`
  * and `attachment` via computePostContentHash (src/crypto/postHash.ts), so every
  * receiver recomputes it locally instead of trusting a transmitted copy. This also

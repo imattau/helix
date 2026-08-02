@@ -1,5 +1,13 @@
-import { describe, expect, it } from 'vitest';
-import { fetchAndVerifyAttachment, AttachmentVerificationError, toDataUrl } from '../../src/api/attachment.js';
+import { describe, expect, it, afterEach } from 'vitest';
+import type { Helia } from 'helia';
+import {
+  fetchAndVerifyAttachment,
+  publishAttachmentToIpfs,
+  fetchAndVerifyAttachmentFromIpfs,
+  AttachmentVerificationError,
+  toDataUrl,
+} from '../../src/api/attachment.js';
+import { createIpfsNode } from '../../src/ipfs/node.js';
 import { sha256 } from '../../src/crypto/hash.js';
 import { toHex } from '../../src/crypto/hex.js';
 import type { Attachment } from '../../src/types/index.js';
@@ -48,5 +56,42 @@ describe('fetchAndVerifyAttachment', () => {
     };
 
     await expect(fetchAndVerifyAttachment(attachment)).rejects.toThrow(AttachmentVerificationError);
+  });
+});
+
+describe('publishAttachmentToIpfs / fetchAndVerifyAttachmentFromIpfs', () => {
+  let node: Helia | undefined;
+
+  afterEach(async () => {
+    await node?.stop();
+    node = undefined;
+  });
+
+  it('publishes and independently fetches+verifies bytes via a real (local) IPFS node', async () => {
+    node = await createIpfsNode();
+    const bytes = new TextEncoder().encode('# Long-form article\n\nPublished via IPFS, not a URL.');
+    const ipfsCid = await publishAttachmentToIpfs(node, bytes);
+
+    const attachment: Attachment = { ...attachmentFor(bytes), sourceUrl: '', ipfsCid };
+    const result = await fetchAndVerifyAttachmentFromIpfs(node, attachment);
+
+    expect(result).toEqual(bytes);
+  });
+
+  it('rejects an attachment with no ipfsCid', async () => {
+    node = await createIpfsNode();
+    const bytes = new TextEncoder().encode('no cid here');
+    const attachment: Attachment = { ...attachmentFor(bytes), sourceUrl: '' };
+
+    await expect(fetchAndVerifyAttachmentFromIpfs(node, attachment)).rejects.toThrow(AttachmentVerificationError);
+  });
+
+  it('rejects a hash mismatch even when the CID resolves successfully', async () => {
+    node = await createIpfsNode();
+    const bytes = new TextEncoder().encode('real content');
+    const ipfsCid = await publishAttachmentToIpfs(node, bytes);
+
+    const tampered: Attachment = { ...attachmentFor(bytes), sourceUrl: '', ipfsCid, hashHex: 'f'.repeat(64) };
+    await expect(fetchAndVerifyAttachmentFromIpfs(node, tampered)).rejects.toThrow(AttachmentVerificationError);
   });
 });

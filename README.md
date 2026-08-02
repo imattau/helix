@@ -57,6 +57,17 @@ in the original design.
   Known limitation: the entropy/SimHash spam and moderation checks still only look at
   the short `content` field, not attachment bytes (checking those would mean every post
   blocks on a synchronous external fetch) — flagged, not silently skipped.
+- **Real IPFS transport for attachments** (`src/ipfs/node.ts`, additions to
+  `src/api/attachment.ts`): a second, additive way to host/retrieve attachment bytes —
+  `publishAttachmentToIpfs`/`fetchAndVerifyAttachmentFromIpfs`, backed by a real
+  [Helia](https://github.com/ipfs/helia) node with real bitswap peer-to-peer transfer.
+  Does not replace the URL-based transport; both are demonstrated side by side. Runs as
+  a **fully independent** libp2p node per peer — Helia requires `@libp2p/interface` v3,
+  which can't share a node with the gossipsub-based Helix node (pinned to v2, the same
+  class of conflict that ruled out `@libp2p/kad-dht` earlier). The two subsystems only
+  ever exchange CIDs and raw bytes, never libp2p objects. `Attachment.ipfsCid` is
+  purely additive and opt-in — `createPost` stays IPFS-unaware, just like it already
+  never validates `sourceUrl`.
 
 Endpoints #3 (CRISPR feed filtering), #4 (CRISPR DAO voting), and #5 (recombination)
 from the original spec are not implemented. ALS-based feed ranking and real
@@ -83,14 +94,15 @@ genome/post, **independently recomputes** the entropy and GF(4) checksum, flags 
 paraphrase via SimHash (something an exact-hash check would miss), and independently
 mirrors his own MMR from the gossiped posts — his printed sync state matches Alice's
 exactly, without ever trusting her claims. One post carries a long-form markdown
-attachment (hosted as a self-contained `data:` URL for the demo); Bob independently
-fetches and verifies it against its hash, having never received the bytes over
-gossipsub. Bob also follows Alice once her genesis arrives; both peers print their
-mirrored follow-graph state at the end.
+attachment, published both as a self-contained `data:` URL and to Alice's own IPFS
+node; Bob independently fetches and verifies it via **both** transports — generic URL
+fetch and real IPFS bitswap from Alice's separate Helia node — having never received
+the bytes over gossipsub either way. Bob also follows Alice once her genesis arrives;
+both peers print their mirrored follow-graph state at the end.
 
 ## Tests
 
 ```bash
-npm test        # unit tests across math/GF(4)/SimHash/PoW/HLC/MMR/social graph/attachments + in-process 2-node and 3-node integration tests
+npm test        # unit tests across math/GF(4)/SimHash/PoW/HLC/MMR/social graph/attachments/IPFS + in-process 2-node, 3-node, and 4-node integration tests
 npm run typecheck
 ```
