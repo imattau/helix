@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { MerkleMountainRange } from './mmr.js';
+import { FollowGraph } from '../social/followGraph.js';
 import type { Genome, Helix, TAD } from '../types/index.js';
 
 /**
@@ -19,6 +20,7 @@ export interface HelixStore {
   getOrCreateMmr(genomeAddress: string): MerkleMountainRange;
   getClosedTad(genomeAddress: string, tadIndex: number): TAD | undefined;
   getLatestPostForGenome(genomeAddress: string): Helix | undefined;
+  getFollowGraph(): FollowGraph;
 }
 
 export class MemoryStore implements HelixStore {
@@ -29,6 +31,7 @@ export class MemoryStore implements HelixStore {
   private mmrsByGenome = new Map<string, MerkleMountainRange>();
   private closedTadsByGenome = new Map<string, TAD[]>();
   private closedTadIdsSeen = new Set<string>();
+  private followGraph = new FollowGraph();
 
   saveGenome(genome: Genome): void {
     this.genomes.set(genome.genome, genome);
@@ -107,5 +110,9 @@ export class MemoryStore implements HelixStore {
     const closedTads = this.closedTadsByGenome.get(genomeAddress);
     const lastClosedTad = closedTads?.[closedTads.length - 1];
     return lastClosedTad?.posts[lastClosedTad.posts.length - 1];
+  }
+
+  getFollowGraph(): FollowGraph {
+    return this.followGraph;
   }
 }

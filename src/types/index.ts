@@ -46,6 +46,11 @@ export interface TAD {
   mmrLeafIndex?: number;
 }
 
+export interface Follow {
+  followerGenome: string;
+  followeeGenome: string;
+}
+
 export interface Spacer {
   postId: string;
   /** 64-bit SimHash fingerprint of the debunked content, as a hex string — see src/math/simhash.ts. */

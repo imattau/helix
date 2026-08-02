@@ -37,6 +37,15 @@ in the original design.
   clock for post timestamps. Every peer runs its own instance — no producer role, no
   central point of control over "decentralized" time. Posts also carry `causalParents`
   (the author's own previous post, plus a reply's parent) as an auditable trail.
+- **Social graph** (`src/social/followGraph.ts`, `src/api/follow.ts`): follow/follower
+  relationships and a "followers of followers" 2nd-degree query, built on
+  [`@0xx0lostcause0xx0/polypack`](https://github.com/imattau/polypack)'s property graph
+  engine — the one place this project uses a library instead of hand-rolling the
+  primitive, since typed nodes/edges and multi-hop traversal are a direct fit here
+  (unlike the earlier non-fits identified for polypack's vector search / sync layer).
+  Follow edges broadcast over a new `helix-follows` gossipsub topic; every receiver
+  verifies both referenced genomes are known before mirroring the edge, same as every
+  other "recompute, don't trust" check in this codebase.
 
 Endpoints #3 (CRISPR feed filtering), #4 (CRISPR DAO voting), and #5 (recombination)
 from the original spec are not implemented. ALS-based feed ranking and real
@@ -56,17 +65,18 @@ npm run peer:a   # terminal 1 - prints its multiaddr, registers a genome, create
 npm run peer:b -- --bootstrap <alice-multiaddr-from-terminal-1>   # terminal 2
 ```
 
-Alice searches for a registration proof-of-work nonce, registers, publishes a forged
+Both peers register a genome (real proof-of-work search). Alice publishes a forged
 low-effort genesis (which Bob's receiver rejects), then creates 11 posts — one of which
 paraphrases a pre-known piece of misinformation. Bob's terminal logs each received
 genome/post, **independently recomputes** the entropy and GF(4) checksum, flags the
 paraphrase via SimHash (something an exact-hash check would miss), and independently
 mirrors his own MMR from the gossiped posts — his printed sync state matches Alice's
-exactly, without ever trusting her claims.
+exactly, without ever trusting her claims. Bob also follows Alice once her genesis
+arrives; both peers print their mirrored follow-graph state at the end.
 
 ## Tests
 
 ```bash
-npm test        # unit tests across math/GF(4)/SimHash/PoW/HLC/MMR + an in-process 2-node integration test
+npm test        # unit tests across math/GF(4)/SimHash/PoW/HLC/MMR/social graph + in-process 2-node and 3-node integration tests
 npm run typecheck
 ```

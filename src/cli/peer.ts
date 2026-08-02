@@ -7,10 +7,11 @@ import { computeMerkleRoot } from '../store/merkle.js';
 import { HybridLogicalClock } from '../clock/hlc.js';
 import { registerUser, genomeProofInput } from '../api/registerUser.js';
 import { createPost, SpamRejectedError, TAD_SIZE } from '../api/createPost.js';
+import { followUser } from '../api/follow.js';
 import { getSyncState } from '../api/query.js';
 import { SpacerRegistry } from '../moderation/spacerRegistry.js';
 import { verifyProofOfWork, REGISTRATION_DIFFICULTY_BITS } from '../crypto/pow.js';
-import { decodeGenesis, decodePost, encodeGenesis } from '../node/messages.js';
+import { decodeGenesis, decodePost, decodeFollow, encodeGenesis } from '../node/messages.js';
 import { TOPICS } from '../node/pubsubTopics.js';
 import { calculate_entropy } from '../math/entropy.js';
 import { to_base4, from_base4 } from '../math/base4.js';
@@ -34,6 +35,14 @@ function parseArgs(argv: string[]) {
   return args;
 }
 
+async function waitFor(predicate: () => boolean, timeoutMs = 10_000): Promise<void> {
+  const start = Date.now();
+  while (!predicate()) {
+    if (Date.now() - start > timeoutMs) throw new Error('waitFor: timed out');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const name = args.name ?? 'peer';
@@ -54,6 +63,10 @@ async function main() {
 
   node.services.pubsub.subscribe(TOPICS.GENESIS);
   node.services.pubsub.subscribe(TOPICS.POSTS);
+  node.services.pubsub.subscribe(TOPICS.FOLLOWS);
+
+  // the first OTHER peer's genome we observe - who this peer will follow in the demo
+  let firstPeerGenome: string | undefined;
 
   // bob mirrors his own MMR purely from what he observes over gossipsub, to prove
   // he isn't just trusting alice's claimed sync state (see query.ts / mmr.ts).
@@ -70,6 +83,17 @@ async function main() {
       }
       store.saveGenome(msg.genome);
       console.log(`[${name}] [GENESIS] accepted genome=${msg.genome.genome} from peer=${msg.genome.peerId} (PoW verified)`);
+      if (msg.genome.peerId !== node.peerId.toString() && !firstPeerGenome) {
+        firstPeerGenome = msg.genome.genome;
+      }
+    } else if (evt.detail.topic === TOPICS.FOLLOWS) {
+      const follow = decodeFollow(evt.detail.data);
+      if (!store.hasGenome(follow.followerGenome) || !store.hasGenome(follow.followeeGenome)) {
+        console.log(`[${name}] [FOLLOW-REJECTED] references an unknown genome - discarded`);
+        return;
+      }
+      store.getFollowGraph().addFollow(follow.followerGenome, follow.followeeGenome);
+      console.log(`[${name}] [FOLLOW] mirrored ${follow.followerGenome} -> ${follow.followeeGenome}`);
     } else if (evt.detail.topic === TOPICS.POSTS) {
       const post = decodePost(evt.detail.data);
       const recomputedEntropy = calculate_entropy(post.content);
@@ -120,17 +144,17 @@ async function main() {
     console.log(`[${name}] dialed bootstrap peer ${args.bootstrap}`);
   }
 
+  // give mDNS/dial a moment to establish the mesh before publishing
+  await new Promise((resolve) => setTimeout(resolve, 3000));
+
+  console.log(`[${name}] searching for a registration proof-of-work nonce (difficulty=${REGISTRATION_DIFFICULTY_BITS} bits)...`);
+  const registerStart = Date.now();
+  const { genome } = await registerUser(node, store, name);
+  console.log(`[${name}] registered genome=${genome.genome} (PoW took ${Date.now() - registerStart}ms, nonce=${genome.powNonce})`);
+
+  await new Promise((resolve) => setTimeout(resolve, 500));
+
   if (isProducer) {
-    // give mDNS/dial a moment to establish the mesh before publishing
-    await new Promise((resolve) => setTimeout(resolve, 3000));
-
-    console.log(`[${name}] searching for a registration proof-of-work nonce (difficulty=${REGISTRATION_DIFFICULTY_BITS} bits)...`);
-    const registerStart = Date.now();
-    const { genome } = await registerUser(node, store, name);
-    console.log(`[${name}] registered genome=${genome.genome} (PoW took ${Date.now() - registerStart}ms, nonce=${genome.powNonce})`);
-
-    await new Promise((resolve) => setTimeout(resolve, 500));
-
     // demonstrate receiver-side PoW enforcement: publish a forged genesis with an
     // almost-certainly-invalid nonce and let bob's own handler reject it.
     const forgedGenome: Genome = {
@@ -168,7 +192,24 @@ async function main() {
 
     const syncState = getSyncState(store, genome.genome);
     console.log(`[${name}] my sync state:`, JSON.stringify(syncState));
+  } else {
+    // bob follows the first peer he observed (alice) once her genesis has arrived
+    await waitFor(() => firstPeerGenome !== undefined, 5000).catch(() => {});
+    if (firstPeerGenome) {
+      await followUser(node, store, genome.genome, firstPeerGenome);
+      console.log(`[${name}] followed genome=${firstPeerGenome}`);
+    }
   }
+
+  if (isProducer) {
+    // bob's follow (sent after his own registration + posting-loop-length delay on
+    // alice's side) may not have arrived yet - give it a real chance before printing
+    await waitFor(() => store.getFollowGraph().getFollowers(genome.genome).length > 0, 5000).catch(() => {});
+  } else {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  console.log(`[${name}] following:`, store.getFollowGraph().getFollowing(genome.genome));
+  console.log(`[${name}] followers:`, store.getFollowGraph().getFollowers(genome.genome));
 }
 
 main().catch((err) => {

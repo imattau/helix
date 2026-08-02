@@ -1,6 +1,6 @@
 import { to_base4 } from '../math/base4.js';
 import { sha256 } from '../crypto/hash.js';
-import type { Genome, Helix } from '../types/index.js';
+import type { Follow, Genome, Helix } from '../types/index.js';
 
 export interface GenesisMessage {
   genome: Genome;
@@ -13,6 +13,14 @@ export function encodeGenesis(msg: GenesisMessage): Uint8Array {
 
 export function decodeGenesis(data: Uint8Array): GenesisMessage {
   return JSON.parse(new TextDecoder().decode(data)) as GenesisMessage;
+}
+
+export function encodeFollow(follow: Follow): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify(follow));
+}
+
+export function decodeFollow(data: Uint8Array): Follow {
+  return JSON.parse(new TextDecoder().decode(data)) as Follow;
 }
 
 /** Wire form of a post omits `contentHashBase4` - it's fully determined by `content`
