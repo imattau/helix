@@ -22,6 +22,7 @@
     "@libp2p/mdns": "^11.0.47",
     "@libp2p/peer-id": "^5.1.9",
     "@libp2p/tcp": "^10.1.19",
+    "@libp2p/websockets": "^9.2.12",
     "@multiformats/multiaddr": "^12.5.1",
     "@multiformats/multiaddr-v13": "npm:@multiformats/multiaddr@^13.0.3",
     "blockstore-core": "^7.0.1",

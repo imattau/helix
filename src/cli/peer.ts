@@ -80,6 +80,14 @@ async function main() {
   const tadBuffers = new Map<string, Helix[]>();
 
   node.services.pubsub.addEventListener('message', (evt) => {
+    try {
+      handleMessage(evt);
+    } catch (err) {
+      console.error(`[${name}] [HANDLER-ERROR]`, err);
+    }
+  });
+
+  function handleMessage(evt: { detail: { topic: string; data: Uint8Array } }) {
     if (evt.detail.topic === TOPICS.GENESIS) {
       const msg = decodeGenesis(evt.detail.data);
       const proofInput = genomeProofInput(fromHex(msg.genome.publicKeyHex), msg.genome.genome);
@@ -183,15 +191,44 @@ async function main() {
         tadBuffers.set(post.genome, []);
       }
     }
-  });
-
-  if (args.bootstrap) {
-    await node.dial(multiaddr(args.bootstrap));
-    console.log(`[${name}] dialed bootstrap peer ${args.bootstrap}`);
   }
 
-  // give mDNS/dial a moment to establish the mesh before publishing
-  await new Promise((resolve) => setTimeout(resolve, 3000));
+  if (args.bootstrap) {
+    // mDNS peer discovery (also active) can occasionally race this explicit dial and
+    // disrupt an in-flight connection upgrade - intermittently a timeout, sometimes a
+    // handshake failure, depending on timing luck. A bounded retry is the pragmatic
+    // fix for a CLI demo already tuned around this class of timing sensitivity,
+    // rather than disabling mDNS (which is otherwise a reasonable discovery bonus).
+    const bootstrapTarget = multiaddr(args.bootstrap);
+    let lastErr: unknown;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        await node.dial(bootstrapTarget, { signal: AbortSignal.timeout(15_000) });
+        console.log(`[${name}] dialed bootstrap peer ${args.bootstrap}`);
+        lastErr = undefined;
+        break;
+      } catch (err) {
+        lastErr = err;
+        console.error(`[${name}] dial attempt ${attempt}/3 failed: ${(err as Error).message} - retrying...`);
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+    }
+    if (lastErr) throw lastErr;
+  }
+
+  // alice (isProducer) is the one who broadcasts time-sensitive things (genesis,
+  // posts) early, so she's the one who needs to confirm bob's gossipsub mesh has
+  // actually formed - not just a fixed sleep - before publishing. Mirrors the
+  // reliable pattern already used throughout the automated test suite. Best-effort:
+  // proceeds anyway if nobody's connected within the window, since a genuinely solo
+  // node shouldn't wait forever.
+  if (isProducer) {
+    await waitFor(() => node.services.pubsub.getSubscribers(TOPICS.GENESIS).length > 0, 15_000).catch(() => {
+      console.error(`[${name}] no gossipsub subscriber appeared within 15s - proceeding anyway`);
+    });
+  } else {
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+  }
 
   // announce this peer's separate IPFS node so the other side can dial it directly
   // (see TOPICS.IPFS_ADDR - mDNS auto-discovery between two independent Helia nodes
@@ -290,6 +327,10 @@ async function main() {
   console.log(`[${name}] following:`, store.getFollowGraph().getFollowing(genome.genome));
   console.log(`[${name}] followers:`, store.getFollowGraph().getFollowers(genome.genome));
 }
+
+process.on('unhandledRejection', (err) => {
+  console.error('[unhandledRejection]', err);
+});
 
 main().catch((err) => {
   console.error(err);
