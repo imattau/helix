@@ -18,6 +18,7 @@ export interface HelixStore {
   savePost(post: Helix, tad: TAD): void;
   getOrCreateMmr(genomeAddress: string): MerkleMountainRange;
   getClosedTad(genomeAddress: string, tadIndex: number): TAD | undefined;
+  getLatestPostForGenome(genomeAddress: string): Helix | undefined;
 }
 
 export class MemoryStore implements HelixStore {
@@ -96,5 +97,15 @@ export class MemoryStore implements HelixStore {
 
   getClosedTad(genomeAddress: string, tadIndex: number): TAD | undefined {
     return this.closedTadsByGenome.get(genomeAddress)?.[tadIndex];
+  }
+
+  getLatestPostForGenome(genomeAddress: string): Helix | undefined {
+    const openTad = this.getOpenTad(genomeAddress);
+    if (openTad && openTad.posts.length > 0) {
+      return openTad.posts[openTad.posts.length - 1];
+    }
+    const closedTads = this.closedTadsByGenome.get(genomeAddress);
+    const lastClosedTad = closedTads?.[closedTads.length - 1];
+    return lastClosedTad?.posts[lastClosedTad.posts.length - 1];
   }
 }

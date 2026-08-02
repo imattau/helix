@@ -4,16 +4,24 @@ import { createHelixNode } from '../node/createNode.js';
 import { MemoryStore } from '../store/memoryStore.js';
 import { MerkleMountainRange } from '../store/mmr.js';
 import { computeMerkleRoot } from '../store/merkle.js';
-import { VDFClock } from '../vdf/clock.js';
-import { registerUser } from '../api/registerUser.js';
+import { HybridLogicalClock } from '../clock/hlc.js';
+import { registerUser, genomeProofInput } from '../api/registerUser.js';
 import { createPost, SpamRejectedError, TAD_SIZE } from '../api/createPost.js';
 import { getSyncState } from '../api/query.js';
-import { decodeGenesis, decodePost } from '../node/messages.js';
+import { SpacerRegistry } from '../moderation/spacerRegistry.js';
+import { verifyProofOfWork, REGISTRATION_DIFFICULTY_BITS } from '../crypto/pow.js';
+import { decodeGenesis, decodePost, encodeGenesis } from '../node/messages.js';
 import { TOPICS } from '../node/pubsubTopics.js';
 import { calculate_entropy } from '../math/entropy.js';
-import { from_base4 } from '../math/base4.js';
+import { to_base4, from_base4 } from '../math/base4.js';
+import { derive_subkey } from '../crypto/keys.js';
+import { fromHex } from '../crypto/hex.js';
 import { gf4Checksum, verifyGf4Checksum } from '../math/gf4.js';
-import type { Helix } from '../types/index.js';
+import type { Helix, Genome } from '../types/index.js';
+
+// Pre-existing "network knowledge" both peers already agree on - stands in for a
+// ratified spacer (out of scope: the DAO submission/voting flow itself, see the plan).
+const KNOWN_MISINFO = 'Drinking bleach cures the common cold according to unnamed doctors';
 
 function parseArgs(argv: string[]) {
   const args: Record<string, string> = {};
@@ -35,7 +43,9 @@ async function main() {
   const identity = await generateHelixIdentity();
   const node = await createHelixNode({ port, privateKey: identity.privateKey });
   const store = new MemoryStore();
-  const vdfClock = new VDFClock(node);
+  const hlcClock = new HybridLogicalClock(node.peerId.toString());
+  const spacerRegistry = new SpacerRegistry();
+  spacerRegistry.submitSpacer(KNOWN_MISINFO, 'pre-existing-spacer', 'evidence-ref', 'dao-genesis');
 
   console.log(`[${name}] PeerId: ${node.peerId.toString()}`);
   for (const addr of node.getMultiaddrs()) {
@@ -44,7 +54,6 @@ async function main() {
 
   node.services.pubsub.subscribe(TOPICS.GENESIS);
   node.services.pubsub.subscribe(TOPICS.POSTS);
-  vdfClock.start();
 
   // bob mirrors his own MMR purely from what he observes over gossipsub, to prove
   // he isn't just trusting alice's claimed sync state (see query.ts / mmr.ts).
@@ -54,21 +63,35 @@ async function main() {
   node.services.pubsub.addEventListener('message', (evt) => {
     if (evt.detail.topic === TOPICS.GENESIS) {
       const msg = decodeGenesis(evt.detail.data);
+      const proofInput = genomeProofInput(fromHex(msg.genome.publicKeyHex), msg.genome.genome);
+      if (!verifyProofOfWork(proofInput, msg.genome.powNonce, REGISTRATION_DIFFICULTY_BITS)) {
+        console.log(`[${name}] [GENESIS-REJECTED] genome=${msg.genome.genome} failed proof-of-work verification - discarded`);
+        return;
+      }
       store.saveGenome(msg.genome);
-      console.log(`[${name}] [GENESIS] received genome=${msg.genome.genome} from peer=${msg.genome.peerId}`);
+      console.log(`[${name}] [GENESIS] accepted genome=${msg.genome.genome} from peer=${msg.genome.peerId} (PoW verified)`);
     } else if (evt.detail.topic === TOPICS.POSTS) {
       const post = decodePost(evt.detail.data);
       const recomputedEntropy = calculate_entropy(post.content);
       const checksumOk = verifyGf4Checksum(post.contentHashBase4, post.gf4Checksum);
+      hlcClock.update(post.hlcTimestamp);
       console.log(
         `[${name}] [POST] id=${post.postId} twist=${post.twist} writhe=${post.writhe} ` +
           `linkingNumber=${post.linkingNumber} entropy=${post.entropy.toFixed(2)} ` +
-          `gf4Checksum=${post.gf4Checksum} vdfTick=${post.vdfTickIndex}`,
+          `gf4Checksum=${post.gf4Checksum} hlc=${JSON.stringify(post.hlcTimestamp)}`,
       );
       console.log(
         `[${name}] [VERIFY] recomputed entropy=${recomputedEntropy.toFixed(2)} ` +
           `(matches=${Math.abs(recomputedEntropy - post.entropy) < 1e-9}) checksum valid=${checksumOk}`,
       );
+
+      const misinfoCheck = spacerRegistry.checkContent(post.content);
+      if (misinfoCheck.isMisinfo) {
+        console.log(
+          `[${name}] [CRISPR] post ${post.postId} flagged as near-duplicate of spacer ` +
+            `${misinfoCheck.matchedSpacer?.postId} (Hamming distance ${misinfoCheck.distance})`,
+        );
+      }
 
       // mirror: buffer posts per genome, fold a TAD root into our own MMR the moment
       // it reaches TAD_SIZE - exactly what the author's own createPost does locally.
@@ -98,23 +121,39 @@ async function main() {
   }
 
   if (isProducer) {
-    vdfClock.startProducing();
     // give mDNS/dial a moment to establish the mesh before publishing
     await new Promise((resolve) => setTimeout(resolve, 3000));
 
+    console.log(`[${name}] searching for a registration proof-of-work nonce (difficulty=${REGISTRATION_DIFFICULTY_BITS} bits)...`);
+    const registerStart = Date.now();
     const { genome } = await registerUser(node, store, name);
-    console.log(`[${name}] registered genome=${genome.genome}`);
+    console.log(`[${name}] registered genome=${genome.genome} (PoW took ${Date.now() - registerStart}ms, nonce=${genome.powNonce})`);
 
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    // demonstrate receiver-side PoW enforcement: publish a forged genesis with an
+    // almost-certainly-invalid nonce and let bob's own handler reject it.
+    const forgedGenome: Genome = {
+      genome: to_base4(derive_subkey(fromHex(genome.publicKeyHex), 'genome:attacker')),
+      publicKeyHex: genome.publicKeyHex,
+      peerId: genome.peerId,
+      powNonce: 0, // ~1/65536 chance of accidentally being valid at 16-bit difficulty
+    };
+    console.log(`[${name}] publishing a forged genesis (invalid PoW) to demonstrate receiver-side rejection...`);
+    await node.services.pubsub.publish(TOPICS.GENESIS, encodeGenesis({ genome: forgedGenome, tadId: 'forged' }));
+
+    await new Promise((resolve) => setTimeout(resolve, 500));
 
     // create enough posts (TAD_SIZE + 1) to close the first TAD and open a second,
-    // so the demo actually exercises an MMR fold.
+    // so the demo actually exercises an MMR fold. One post paraphrases KNOWN_MISINFO
+    // to demonstrate SimHash catching what an exact-hash CRISPR check would miss.
     for (let i = 0; i < TAD_SIZE + 1; i++) {
+      const content =
+        i === 3
+          ? 'Drinking bleach cures the common cold according to unnamed experts' // paraphrase of KNOWN_MISINFO
+          : `Hello Helix network, post #${i}! GF4 self-checksum sanity: ${gf4Checksum('ACGT')}`;
       try {
-        const post = await createPost(node, store, vdfClock, {
-          authorGenome: genome.genome,
-          content: `Hello Helix network, post #${i}! GF4 self-checksum sanity: ${gf4Checksum('ACGT')}`,
-        });
+        const post = await createPost(node, store, hlcClock, { authorGenome: genome.genome, content });
         console.log(
           `[${name}] created post #${i} id=${post.postId} twist=${post.twist} writhe=${post.writhe} linkingNumber=${post.linkingNumber}`,
         );

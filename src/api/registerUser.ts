@@ -1,6 +1,7 @@
-import { to_base4 } from '../math/base4.js';
+import { to_base4, from_base4 } from '../math/base4.js';
 import { derive_subkey } from '../crypto/keys.js';
 import { toHex } from '../crypto/hex.js';
+import { findProofOfWork, REGISTRATION_DIFFICULTY_BITS } from '../crypto/pow.js';
 import { TOPICS } from '../node/pubsubTopics.js';
 import { encodeGenesis } from '../node/messages.js';
 import type { HelixNode } from '../node/createNode.js';
@@ -10,6 +11,15 @@ import type { Genome, TAD } from '../types/index.js';
 export interface RegisterUserResult {
   genome: Genome;
   genesisTad: TAD;
+}
+
+/** The exact bytes the registration proof-of-work is computed over — shared so receivers can re-verify it. */
+export function genomeProofInput(publicKeyBytes: Uint8Array, genome: string): Uint8Array {
+  const genomeBytes = from_base4(genome);
+  const out = new Uint8Array(publicKeyBytes.length + genomeBytes.length);
+  out.set(publicKeyBytes, 0);
+  out.set(genomeBytes, publicKeyBytes.length);
+  return out;
 }
 
 /**
@@ -38,10 +48,17 @@ export async function registerUser(
     genome = to_base4(derive_subkey(publicKeyBytes, `genome:${displayName}:${attempt}`));
   }
 
+  // Registration has a real cost: find a nonce over (pubkey ++ genome) whose hash meets
+  // the network's difficulty target. Every receiver re-verifies this (see the genesis
+  // handlers in src/cli/peer.ts and the integration test) - unlimited free identities
+  // are no longer possible, replacing the "None" Sybil resistance from the original spec.
+  const { nonce: powNonce } = findProofOfWork(genomeProofInput(publicKeyBytes, genome), REGISTRATION_DIFFICULTY_BITS);
+
   const genomeRecord: Genome = {
     genome,
     publicKeyHex: toHex(publicKeyBytes),
     peerId: node.peerId.toString(),
+    powNonce,
   };
   const genesisTad = store.createTad(genome);
   store.saveGenome(genomeRecord);

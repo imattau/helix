@@ -10,7 +10,7 @@ import { TOPICS } from '../node/pubsubTopics.js';
 import { encodePost } from '../node/messages.js';
 import type { HelixNode } from '../node/createNode.js';
 import type { HelixStore } from '../store/memoryStore.js';
-import type { VDFClock } from '../vdf/clock.js';
+import type { HybridLogicalClock } from '../clock/hlc.js';
 import type { Helix } from '../types/index.js';
 
 /** Anti-spam gate: posts with less character-distribution diversity than this are rejected. */
@@ -34,7 +34,7 @@ export interface CreatePostOptions {
 export async function createPost(
   node: HelixNode,
   store: HelixStore,
-  vdfClock: VDFClock,
+  hlcClock: HybridLogicalClock,
   opts: CreatePostOptions,
 ): Promise<Helix> {
   const entropy = calculate_entropy(opts.content);
@@ -47,13 +47,21 @@ export async function createPost(
   const checksum = gf4Checksum(contentHashBase4);
 
   let writhe = 0;
+  let parent: Helix | undefined;
   if (opts.parentPostId) {
-    const parent = store.getPost(opts.parentPostId);
+    parent = store.getPost(opts.parentPostId);
     if (!parent) {
       throw new Error(`createPost: parent post ${opts.parentPostId} not found`);
     }
     writhe = parent.writhe + 1;
   }
+
+  // causalParents records what the author knew about at creation time: their own
+  // previous post (their local clock is already monotonic w.r.t. it, so it needs no
+  // HLC merge) plus a reply's parent (merged below, since it may be from another peer).
+  const authorLastPost = store.getLatestPostForGenome(opts.authorGenome);
+  const causalParents = [...new Set([authorLastPost?.postId, opts.parentPostId].filter((id): id is string => id !== undefined))];
+  const hlcTimestamp = parent ? hlcClock.update(parent.hlcTimestamp) : hlcClock.now();
 
   let tad = store.getOpenTad(opts.authorGenome);
   if (!tad) {
@@ -61,7 +69,6 @@ export async function createPost(
   }
 
   const twist = tad.posts.length;
-  const tick = vdfClock.latestTick();
 
   const post: Helix = {
     postId: randomUUID(),
@@ -74,8 +81,8 @@ export async function createPost(
     entropy,
     contentHashBase4,
     gf4Checksum: checksum,
-    vdfTickIndex: tick.tickIndex,
-    vdfOutputHex: tick.outputHex,
+    hlcTimestamp,
+    causalParents,
   };
 
   tad.posts.push(post);

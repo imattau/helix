@@ -9,6 +9,15 @@ export interface Genome {
   genome: string; // base-4 string
   publicKeyHex: string;
   peerId: string;
+  /** Proof-of-work nonce proving registration cost was paid — see src/crypto/pow.ts. */
+  powNonce: number;
+}
+
+/** Hybrid Logical Clock timestamp — see src/clock/hlc.ts. */
+export interface HLCTimestamp {
+  physical: number;
+  logical: number;
+  peerId: string;
 }
 
 export interface Helix {
@@ -22,8 +31,9 @@ export interface Helix {
   entropy: number;
   contentHashBase4: string;
   gf4Checksum: string;
-  vdfTickIndex: number;
-  vdfOutputHex: string;
+  hlcTimestamp: HLCTimestamp;
+  /** Post IDs the author knew about at creation time: their own previous post, plus a reply's parent. */
+  causalParents: string[];
 }
 
 export interface TAD {
@@ -38,16 +48,8 @@ export interface TAD {
 
 export interface Spacer {
   postId: string;
-  falseHashBase4: string;
+  /** 64-bit SimHash fingerprint of the debunked content, as a hex string — see src/math/simhash.ts. */
+  simhashHex: string;
   evidenceHash: string;
   submittedBy: string;
-  complementaryAnchor: string;
-}
-
-export interface VDFTickMessage {
-  tickIndex: number;
-  seedHex: string;
-  outputHex: string;
-  difficulty: number;
-  prevTickHashHex: string;
 }
