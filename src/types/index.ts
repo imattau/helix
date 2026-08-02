@@ -20,6 +20,18 @@ export interface HLCTimestamp {
   peerId: string;
 }
 
+/**
+ * A content-addressed reference to media/long-form content hosted outside the gossiped
+ * post itself — see src/api/attachment.ts. `sourceUrl` is a hint only; `hashHex` is the
+ * source of truth a reader verifies against before trusting fetched bytes.
+ */
+export interface Attachment {
+  hashHex: string;
+  mimeType: string;
+  sizeBytes: number;
+  sourceUrl: string;
+}
+
 export interface Helix {
   postId: string;
   genome: string;
@@ -34,6 +46,7 @@ export interface Helix {
   hlcTimestamp: HLCTimestamp;
   /** Post IDs the author knew about at creation time: their own previous post, plus a reply's parent. */
   causalParents: string[];
+  attachment?: Attachment;
 }
 
 export interface TAD {

@@ -8,6 +8,7 @@ import { registerUser, genomeProofInput } from '../../src/api/registerUser.js';
 import { createPost, TAD_SIZE } from '../../src/api/createPost.js';
 import { getSyncState, getMerkleProof, verifyPost } from '../../src/api/query.js';
 import { SpacerRegistry } from '../../src/moderation/spacerRegistry.js';
+import { fetchAndVerifyAttachment, toDataUrl } from '../../src/api/attachment.js';
 import { verifyProofOfWork, REGISTRATION_DIFFICULTY_BITS } from '../../src/crypto/pow.js';
 import { decodeGenesis, decodePost, encodeGenesis } from '../../src/node/messages.js';
 import { TOPICS } from '../../src/node/pubsubTopics.js';
@@ -118,13 +119,22 @@ describe('two peers over libp2p', () => {
     await waitFor(() => rejectedGenomeCount > 0);
     expect(bobStore.hasGenome(forgedGenome.genome)).toBe(false);
 
+    const attachmentBytes = new TextEncoder().encode(
+      '# A long-form article\n\nThis is far more text than would ever fit as tweet-length `content` - exactly the case attachments exist for.',
+    );
+    const attachmentMimeType = 'text/markdown';
+
     const createdPosts: Helix[] = [];
     for (let i = 0; i < TAD_SIZE + 1; i++) {
       const content =
         i === 3
           ? 'Drinking bleach cures the common cold according to unnamed experts' // paraphrase of KNOWN_MISINFO
           : `Hello Helix network, sufficiently diverse test post number ${i}!`;
-      const post = await createPost(alice, aliceStore, aliceClock, { authorGenome: genome.genome, content });
+      const attachment =
+        i === 5
+          ? { bytes: attachmentBytes, mimeType: attachmentMimeType, sourceUrl: toDataUrl(attachmentBytes, attachmentMimeType) }
+          : undefined;
+      const post = await createPost(alice, aliceStore, aliceClock, { authorGenome: genome.genome, content, attachment });
       createdPosts.push(post);
     }
     const post = createdPosts[0];
@@ -166,5 +176,20 @@ describe('two peers over libp2p', () => {
     // a full two-level proof (post -> TAD root -> MMR peak) for a post in the closed TAD verifies
     const { post: provenPost, tadMerkleRootHex, tadProof, mmrProof } = getMerkleProof(aliceStore, genome.genome, 3);
     expect(verifyPost(provenPost, tadMerkleRootHex, tadProof, mmrProof, aliceSyncState.peaks)).toBe(true);
+
+    // the attached post (index 5): its contentHashBase4 covers the attachment hash, not
+    // just content, so the same two-level Merkle proof still verifies it end-to-end
+    const receivedAttachedPost = receivedPosts[5];
+    expect(receivedAttachedPost.attachment).toBeDefined();
+    expect(receivedAttachedPost.attachment?.sizeBytes).toBe(attachmentBytes.length);
+    const attachedProof = getMerkleProof(aliceStore, genome.genome, 5);
+    expect(
+      verifyPost(attachedProof.post, attachedProof.tadMerkleRootHex, attachedProof.tadProof, attachedProof.mmrProof, aliceSyncState.peaks),
+    ).toBe(true);
+
+    // bob never received the attachment's bytes over gossipsub (only the hash/URL
+    // metadata) - he independently fetches and verifies them himself
+    const fetchedBytes = await fetchAndVerifyAttachment(receivedAttachedPost.attachment!);
+    expect(fetchedBytes).toEqual(attachmentBytes);
   });
 });

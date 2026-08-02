@@ -46,6 +46,17 @@ in the original design.
   Follow edges broadcast over a new `helix-follows` gossipsub topic; every receiver
   verifies both referenced genomes are known before mirroring the edge, same as every
   other "recompute, don't trust" check in this codebase.
+- **Media & long-form attachments** (`src/crypto/postHash.ts`, `src/api/attachment.ts`):
+  posts can reference an `Attachment` (SHA-256 hash + MIME type + size + source URL)
+  instead of cramming long-form content into the tweet-length `content` field. The
+  actual bytes never travel over gossipsub — only the reference does — so a reader
+  fetches and verifies them independently via `fetchAndVerifyAttachment` before
+  trusting them. The attachment's hash is folded into `contentHashBase4`
+  (`computePostContentHash`), so it's covered by the same GF(4) checksum and two-level
+  Merkle/MMR proof as everything else, not a side-channel outside the integrity chain.
+  Known limitation: the entropy/SimHash spam and moderation checks still only look at
+  the short `content` field, not attachment bytes (checking those would mean every post
+  blocks on a synchronous external fetch) — flagged, not silently skipped.
 
 Endpoints #3 (CRISPR feed filtering), #4 (CRISPR DAO voting), and #5 (recombination)
 from the original spec are not implemented. ALS-based feed ranking and real
@@ -71,12 +82,15 @@ paraphrases a pre-known piece of misinformation. Bob's terminal logs each receiv
 genome/post, **independently recomputes** the entropy and GF(4) checksum, flags the
 paraphrase via SimHash (something an exact-hash check would miss), and independently
 mirrors his own MMR from the gossiped posts — his printed sync state matches Alice's
-exactly, without ever trusting her claims. Bob also follows Alice once her genesis
-arrives; both peers print their mirrored follow-graph state at the end.
+exactly, without ever trusting her claims. One post carries a long-form markdown
+attachment (hosted as a self-contained `data:` URL for the demo); Bob independently
+fetches and verifies it against its hash, having never received the bytes over
+gossipsub. Bob also follows Alice once her genesis arrives; both peers print their
+mirrored follow-graph state at the end.
 
 ## Tests
 
 ```bash
-npm test        # unit tests across math/GF(4)/SimHash/PoW/HLC/MMR/social graph + in-process 2-node and 3-node integration tests
+npm test        # unit tests across math/GF(4)/SimHash/PoW/HLC/MMR/social graph/attachments + in-process 2-node and 3-node integration tests
 npm run typecheck
 ```

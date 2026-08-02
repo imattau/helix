@@ -4,6 +4,7 @@ import { calculate_entropy } from '../math/entropy.js';
 import { calculate_linking_number } from '../math/linking.js';
 import { gf4Checksum } from '../math/gf4.js';
 import { sha256 } from '../crypto/hash.js';
+import { computePostContentHash } from '../crypto/postHash.js';
 import { computeMerkleRoot } from '../store/merkle.js';
 import { toHex, fromHex } from '../crypto/hex.js';
 import { TOPICS } from '../node/pubsubTopics.js';
@@ -11,7 +12,7 @@ import { encodePost } from '../node/messages.js';
 import type { HelixNode } from '../node/createNode.js';
 import type { HelixStore } from '../store/memoryStore.js';
 import type { HybridLogicalClock } from '../clock/hlc.js';
-import type { Helix } from '../types/index.js';
+import type { Attachment, Helix } from '../types/index.js';
 
 /** Anti-spam gate: posts with less character-distribution diversity than this are rejected. */
 export const ENTROPY_THRESHOLD = 2.5;
@@ -29,6 +30,8 @@ export interface CreatePostOptions {
   authorGenome: string;
   content: string;
   parentPostId?: string;
+  /** Media/long-form content hosted outside the gossiped post - see src/api/attachment.ts. */
+  attachment?: { bytes: Uint8Array; mimeType: string; sourceUrl: string };
 }
 
 export async function createPost(
@@ -42,7 +45,16 @@ export async function createPost(
     throw new SpamRejectedError(entropy);
   }
 
-  const contentHash = sha256(new TextEncoder().encode(opts.content));
+  // hash/size are always computed from the actual bytes, never trusted from the caller -
+  // matching every other hash in this codebase
+  const attachment: Attachment | undefined = opts.attachment && {
+    hashHex: toHex(sha256(opts.attachment.bytes)),
+    mimeType: opts.attachment.mimeType,
+    sizeBytes: opts.attachment.bytes.length,
+    sourceUrl: opts.attachment.sourceUrl,
+  };
+
+  const contentHash = computePostContentHash(opts.content, attachment);
   const contentHashBase4 = to_base4(contentHash);
   const checksum = gf4Checksum(contentHashBase4);
 
@@ -83,6 +95,7 @@ export async function createPost(
     gf4Checksum: checksum,
     hlcTimestamp,
     causalParents,
+    attachment,
   };
 
   tad.posts.push(post);

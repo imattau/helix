@@ -1,5 +1,5 @@
 import { to_base4, from_base4 } from '../math/base4.js';
-import { sha256 } from '../crypto/hash.js';
+import { computePostContentHash } from '../crypto/postHash.js';
 import { fromHex } from '../crypto/hex.js';
 import { computeMerkleProof, verifyMerkleProof, type MerkleProofStep } from '../store/merkle.js';
 import { MerkleMountainRange, type MMRPeak, type MMRProof, type MMRSyncState } from '../store/mmr.js';
@@ -71,7 +71,7 @@ export function verifyPost(
   mmrProof: MMRProof,
   peaks: readonly MMRPeak[],
 ): boolean {
-  const recomputedHashBase4 = to_base4(sha256(new TextEncoder().encode(post.content)));
+  const recomputedHashBase4 = to_base4(computePostContentHash(post.content, post.attachment));
   if (recomputedHashBase4 !== post.contentHashBase4) return false;
 
   const leafBytes = from_base4(post.contentHashBase4);

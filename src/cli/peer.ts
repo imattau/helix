@@ -9,6 +9,7 @@ import { registerUser, genomeProofInput } from '../api/registerUser.js';
 import { createPost, SpamRejectedError, TAD_SIZE } from '../api/createPost.js';
 import { followUser } from '../api/follow.js';
 import { getSyncState } from '../api/query.js';
+import { fetchAndVerifyAttachment, toDataUrl } from '../api/attachment.js';
 import { SpacerRegistry } from '../moderation/spacerRegistry.js';
 import { verifyProofOfWork, REGISTRATION_DIFFICULTY_BITS } from '../crypto/pow.js';
 import { decodeGenesis, decodePost, decodeFollow, encodeGenesis } from '../node/messages.js';
@@ -117,6 +118,21 @@ async function main() {
         );
       }
 
+      if (post.attachment) {
+        // the attachment's bytes never came over gossipsub - only this metadata did.
+        // Independently fetch and verify them before trusting the content exists.
+        fetchAndVerifyAttachment(post.attachment)
+          .then((bytes) => {
+            console.log(
+              `[${name}] [ATTACHMENT] verified ${post.attachment!.mimeType}, ${bytes.length} bytes, ` +
+                `hash=${post.attachment!.hashHex.slice(0, 16)}...`,
+            );
+          })
+          .catch((err) => {
+            console.error(`[${name}] [ATTACHMENT-REJECTED] ${err.message}`);
+          });
+      }
+
       // mirror: buffer posts per genome, fold a TAD root into our own MMR the moment
       // it reaches TAD_SIZE - exactly what the author's own createPost does locally.
       const buffer = tadBuffers.get(post.genome) ?? [];
@@ -168,16 +184,30 @@ async function main() {
 
     await new Promise((resolve) => setTimeout(resolve, 500));
 
+    const attachmentBytes = new TextEncoder().encode(
+      '# A long-form article\n\nThis is far more text than would ever fit as tweet-length ' +
+        'content - the whole reason attachments exist. Hosted outside the gossiped post, ' +
+        'referenced by hash.',
+    );
+    const attachmentMimeType = 'text/markdown';
+
     // create enough posts (TAD_SIZE + 1) to close the first TAD and open a second,
     // so the demo actually exercises an MMR fold. One post paraphrases KNOWN_MISINFO
-    // to demonstrate SimHash catching what an exact-hash CRISPR check would miss.
+    // to demonstrate SimHash catching what an exact-hash CRISPR check would miss;
+    // another carries a long-form markdown attachment.
     for (let i = 0; i < TAD_SIZE + 1; i++) {
       const content =
         i === 3
           ? 'Drinking bleach cures the common cold according to unnamed experts' // paraphrase of KNOWN_MISINFO
-          : `Hello Helix network, post #${i}! GF4 self-checksum sanity: ${gf4Checksum('ACGT')}`;
+          : i === 5
+            ? 'Just published a long-form piece - see the attached article.'
+            : `Hello Helix network, post #${i}! GF4 self-checksum sanity: ${gf4Checksum('ACGT')}`;
+      const attachment =
+        i === 5
+          ? { bytes: attachmentBytes, mimeType: attachmentMimeType, sourceUrl: toDataUrl(attachmentBytes, attachmentMimeType) }
+          : undefined;
       try {
-        const post = await createPost(node, store, hlcClock, { authorGenome: genome.genome, content });
+        const post = await createPost(node, store, hlcClock, { authorGenome: genome.genome, content, attachment });
         console.log(
           `[${name}] created post #${i} id=${post.postId} twist=${post.twist} writhe=${post.writhe} linkingNumber=${post.linkingNumber}`,
         );

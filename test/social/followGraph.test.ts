@@ -74,5 +74,25 @@ describe('FollowGraph', () => {
 
       expect(graph.getFollowersOfFollowers('alice')).toEqual(['dave']);
     });
+
+    it('does not include a peer who is in the graph but does not follow bob', () => {
+      const graph = new FollowGraph();
+      graph.addFollow('bob', 'alice');
+      graph.addFollow('carol', 'bob');
+      graph.addFollow('charlie', 'dave'); // charlie exists in the graph, but has no edge to bob
+
+      expect(graph.getFollowersOfFollowers('alice')).toEqual(['carol']);
+      expect(graph.getFollowersOfFollowers('alice')).not.toContain('charlie');
+    });
+
+    it('does not include a peer who never touches the graph at all', () => {
+      const graph = new FollowGraph();
+      graph.addFollow('bob', 'alice');
+      graph.addFollow('carol', 'bob');
+      // 'charlie' is never passed to addFollow anywhere - not even a node in the graph
+
+      expect(graph.getFollowersOfFollowers('alice')).toEqual(['carol']);
+      expect(graph.getFollowers('charlie')).toEqual([]); // querying an unknown genome doesn't throw
+    });
   });
 });
