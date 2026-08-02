@@ -1,0 +1,66 @@
+@import "tailwindcss";
+
+/*
+ * Design tokens from the Figma source (fileKey Tcmj0lEhCp4OVYATZ4ZHMk).
+ * The "helix-settings" screen was authored with slightly different values
+ * (bg #09090b vs #0b0b0c, accent #6366f1 vs #5e50f9, Geist vs Manrope) than
+ * the other four screens - unified here to one consistent token set rather
+ * than shipping two near-duplicate dark/purple palettes side by side.
+ */
+@theme {
+  --color-bg: #0b0b0c;
+  --color-surface: #16171b;
+  --color-surface-alt: #202127;
+  --color-border: #24262b;
+  --color-ink: #f3f4f6;
+  --color-ink-muted: #8e919a;
+  --color-ink-faint: #52525b;
+  --color-accent: #5e50f9;
+  --color-accent-soft: rgb(94 80 249 / 13%);
+  --color-danger: #ef4444;
+  --color-danger-soft: rgb(239 68 68 / 8%);
+  --color-warning: #f87171;
+
+  --font-sans: "Manrope", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Unbounded", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  margin: 0;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-surface-alt) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: var(--color-surface-alt);
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--color-border);
+  background-clip: content-box;
+}
