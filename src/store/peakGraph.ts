@@ -1,5 +1,5 @@
 import { PolyGraph, defineEdges } from '@0xx0lostcause0xx0/polypack';
-import type { PolyNode } from '@0xx0lostcause0xx0/polypack';
+import type { PersistenceAdapter, PolyNode } from '@0xx0lostcause0xx0/polypack';
 import type { MMRPeak } from './mmr.js';
 
 const EDGE = defineEdges({ CONTAINS: 'CONTAINS' });
@@ -34,7 +34,27 @@ function nodeToPeak(node: PolyNode): MMRPeak {
  * this and is completely unaffected by it.
  */
 export class PeakGraph {
-  private graph = new PolyGraph();
+  private graph: PolyGraph;
+
+  constructor(adapter?: PersistenceAdapter) {
+    this.graph = new PolyGraph(adapter);
+  }
+
+  load(): Promise<void> {
+    return this.graph.warm();
+  }
+
+  flush(): Promise<void> {
+    return this.graph.flush();
+  }
+
+  dispose(): Promise<void> {
+    return this.graph.dispose();
+  }
+
+  private flushSoon(): void {
+    this.graph.flush().catch((err) => console.error('[helix] failed to persist peak graph', err));
+  }
 
   private ensurePeakNode(genome: string, peak: MMRPeak): string {
     const id = peakNodeId(genome, peak);
@@ -56,6 +76,7 @@ export class PeakGraph {
     // there's no meaningful independent lifetime for a child peak once folded.
     this.graph.addEdge(combinedId, EDGE.CONTAINS, leftId, {}, 'owned');
     this.graph.addEdge(combinedId, EDGE.CONTAINS, rightId, {}, 'owned');
+    this.flushSoon();
   }
 
   /** The two peaks `peak` was folded from, or [] if it was never combined with a sibling. */

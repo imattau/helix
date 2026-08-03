@@ -1,4 +1,5 @@
 import { PolyGraph } from "@0xx0lostcause0xx0/polypack";
+import type { PersistenceAdapter } from "@0xx0lostcause0xx0/polypack";
 
 const NODE_TYPE_POST = "post";
 const NODE_TYPE_USER = "user";
@@ -27,7 +28,27 @@ interface UserSearchData {
  * sees plain strings its callers hand it.
  */
 export class SearchIndex {
-  private graph = new PolyGraph();
+  private graph: PolyGraph;
+
+  constructor(adapter?: PersistenceAdapter) {
+    this.graph = new PolyGraph(adapter);
+  }
+
+  load(): Promise<void> {
+    return this.graph.warm();
+  }
+
+  flush(): Promise<void> {
+    return this.graph.flush();
+  }
+
+  dispose(): Promise<void> {
+    return this.graph.dispose();
+  }
+
+  private flushSoon(): void {
+    this.graph.flush().catch((err) => console.error("[helix] failed to persist search index", err));
+  }
 
   /** Indexes (or, called again with the same postId, re-indexes) a post's searchable text. */
   async indexPost(postId: string, content: string): Promise<void> {
@@ -37,6 +58,7 @@ export class SearchIndex {
       { id: `post:${postId}`, type: NODE_TYPE_POST, data, insertedAt: Date.now(), updatedAt: Date.now() },
       content,
     );
+    this.flushSoon();
   }
 
   /** Indexes (or, called again for the same genome, re-indexes on a profile edit) a display name. */
@@ -47,6 +69,7 @@ export class SearchIndex {
       { id: `user:${genome}`, type: NODE_TYPE_USER, data, insertedAt: Date.now(), updatedAt: Date.now() },
       displayName,
     );
+    this.flushSoon();
   }
 
   async search(text: string, limit = 20): Promise<{ postIds: string[]; genomes: string[] }> {

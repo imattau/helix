@@ -1,10 +1,12 @@
 import { multiaddr } from '@multiformats/multiaddr';
 import { multiaddr as multiaddrV13 } from '@multiformats/multiaddr-v13';
+import path from 'node:path';
 import { generateHelixIdentity } from '../crypto/keys.js';
 import { createHelixNode } from '../node/createNode.js';
 import { connectPublicDiscovery } from '../node/rendezvous.js';
 import { createIpfsNode, type IpfsNode } from '../ipfs/node.js';
 import { MemoryStore } from '../store/memoryStore.js';
+import { BinaryStoreAdapter } from '@0xx0lostcause0xx0/polypack/persistence/node';
 import { MerkleMountainRange } from '../store/mmr.js';
 import { computeMerkleRoot } from '../store/merkle.js';
 import { HybridLogicalClock } from '../clock/hlc.js';
@@ -53,6 +55,7 @@ async function main() {
   const name = args.name ?? 'peer';
   const port = Number(args.port ?? 0);
   const isProducer = name === 'alice';
+  const dataDir = path.resolve(args['data-dir'] ?? path.join('.helix-data', name));
 
   // Opt-in (see createNode.ts) - joins the public IPFS/libp2p DHT in client mode to
   // find other Helix peers via rendezvous, beyond this demo's own --bootstrap flag.
@@ -61,7 +64,12 @@ async function main() {
   const identity = await generateHelixIdentity();
   const node = await createHelixNode({ port, privateKey: identity.privateKey, publicDiscovery });
   const ipfsNode: IpfsNode = await createIpfsNode();
-  const store = new MemoryStore();
+  const store = new MemoryStore({
+    storeAdapter: new BinaryStoreAdapter({ storeDir: path.join(dataDir, 'store-graph') }),
+    followGraphAdapter: new BinaryStoreAdapter({ storeDir: path.join(dataDir, 'follow-graph') }),
+    peakGraphAdapter: new BinaryStoreAdapter({ storeDir: path.join(dataDir, 'peak-graph') }),
+  });
+  await store.loadPersistentGraphs();
   const hlcClock = new HybridLogicalClock(node.peerId.toString());
   const spacerRegistry = new SpacerRegistry();
   spacerRegistry.submitSpacer(KNOWN_MISINFO, 'pre-existing-spacer', 'evidence-ref', 'dao-genesis');
@@ -71,6 +79,18 @@ async function main() {
     console.log(`[${name}] listening on: ${addr.toString()}`);
   }
   console.log(`[${name}] IPFS PeerId: ${ipfsNode.libp2p.peerId.toString()} (separate node - see src/ipfs/node.ts)`);
+  console.log(`[${name}] PolyPack graph data: ${dataDir}`);
+
+  let shuttingDown = false;
+  async function shutdown(exitCode: number): Promise<void> {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    await store.disposePersistentGraphs().catch((err) => console.error(`[${name}] failed to close PolyPack stores:`, err));
+    await Promise.allSettled([node.stop(), ipfsNode.libp2p.stop()]);
+    process.exit(exitCode);
+  }
+  process.once('SIGINT', () => void shutdown(0));
+  process.once('SIGTERM', () => void shutdown(0));
 
   node.services.pubsub.subscribe(TOPICS.GENESIS);
   node.services.pubsub.subscribe(TOPICS.POSTS);

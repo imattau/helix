@@ -1,11 +1,9 @@
-import { to_base4, from_base4 } from '../math/base4.js';
+import { to_base4 } from '../math/base4.js';
 import { calculate_entropy } from '../math/entropy.js';
 import { calculate_linking_number } from '../math/linking.js';
 import { gf4Checksum } from '../math/gf4.js';
 import { computePostContentHash } from '../crypto/postHash.js';
-import { computeMerkleRoot } from '../store/merkle.js';
-import { toHex, fromHex } from '../crypto/hex.js';
-import { ENTROPY_THRESHOLD, TAD_SIZE } from './createPost.js';
+import { ENTROPY_THRESHOLD } from './createPost.js';
 import type { HelixStore } from '../store/memoryStore.js';
 import type { Helix, HelixKind } from '../types/index.js';
 
@@ -109,13 +107,7 @@ export function ingestPost(store: HelixStore, post: Helix): Helix {
   if (!tad) tad = store.createTad(post.genome);
   if (post.twist !== tad.posts.length) reject(`twist ${post.twist} does not match next local TAD index ${tad.posts.length}`);
 
-  tad.posts.push(post);
-  tad.merkleRootHex = toHex(computeMerkleRoot(tad.posts.map((p) => from_base4(p.contentHashBase4))));
-  if (tad.posts.length >= TAD_SIZE) {
-    tad.closed = true;
-    tad.mmrLeafIndex = store.getOrCreateMmr(post.genome).append(fromHex(tad.merkleRootHex));
-  }
-  store.savePost(post, tad);
+  store.appendPost(post);
 
   return post;
 }

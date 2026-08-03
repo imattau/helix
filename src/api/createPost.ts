@@ -1,11 +1,10 @@
-import { to_base4, from_base4 } from '../math/base4.js';
+import { to_base4 } from '../math/base4.js';
 import { calculate_entropy } from '../math/entropy.js';
 import { calculate_linking_number } from '../math/linking.js';
 import { gf4Checksum } from '../math/gf4.js';
 import { sha256 } from '../crypto/hash.js';
 import { computePostContentHash } from '../crypto/postHash.js';
-import { computeMerkleRoot } from '../store/merkle.js';
-import { toHex, fromHex } from '../crypto/hex.js';
+import { toHex } from '../crypto/hex.js';
 import { TOPICS } from '../node/pubsubTopics.js';
 import { encodePost } from '../node/messages.js';
 import type { HelixNode } from '../node/createNode.js';
@@ -159,13 +158,9 @@ export async function createPost(
     recombinesPostId: opts.recombinesPostId,
   };
 
-  tad.posts.push(post);
-  tad.merkleRootHex = toHex(computeMerkleRoot(tad.posts.map((p) => from_base4(p.contentHashBase4))));
-  if (tad.posts.length >= TAD_SIZE) {
-    tad.closed = true;
-    tad.mmrLeafIndex = store.getOrCreateMmr(opts.authorGenome).append(fromHex(tad.merkleRootHex));
-  }
-  store.savePost(post, tad);
+  // The store owns TAD closure: it recomputes the Merkle root, closes the TAD at
+  // TAD_SIZE, and folds its root into the genome's MMR (see memoryStore.appendPost).
+  store.appendPost(post);
 
   await node.services.pubsub.publish(TOPICS.POSTS, encodePost(post));
 

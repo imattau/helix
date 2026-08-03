@@ -1,5 +1,5 @@
 import { PolyGraph, defineEdges } from '@0xx0lostcause0xx0/polypack';
-import type { PolyNode } from '@0xx0lostcause0xx0/polypack';
+import type { PersistenceAdapter, PolyNode } from '@0xx0lostcause0xx0/polypack';
 
 const EDGE = defineEdges({ FOLLOWS: 'FOLLOWS' });
 const NODE_TYPE_GENOME = 'genome';
@@ -15,7 +15,27 @@ const NODE_TYPE_GENOME = 'genome';
  * `PolyGraph`'s `addNode`/`addEdge` work without them.
  */
 export class FollowGraph {
-  private graph = new PolyGraph();
+  private graph: PolyGraph;
+
+  constructor(adapter?: PersistenceAdapter) {
+    this.graph = new PolyGraph(adapter);
+  }
+
+  load(): Promise<void> {
+    return this.graph.warm();
+  }
+
+  flush(): Promise<void> {
+    return this.graph.flush();
+  }
+
+  dispose(): Promise<void> {
+    return this.graph.dispose();
+  }
+
+  private flushSoon(): void {
+    this.graph.flush().catch((err) => console.error('[helix] failed to persist follow graph', err));
+  }
 
   private ensureGenomeNode(genome: string): void {
     if (this.graph.getNode(genome)) return;
@@ -29,6 +49,7 @@ export class FollowGraph {
     this.ensureGenomeNode(followerGenome);
     this.ensureGenomeNode(followeeGenome);
     this.graph.addEdge(followerGenome, EDGE.FOLLOWS, followeeGenome);
+    this.flushSoon();
   }
 
   /** Who `genome` follows. */

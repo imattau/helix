@@ -11,8 +11,9 @@ import { TOPICS } from "@helix/node/pubsubTopics.js";
 import { decodeGenesis, decodePost, decodeFollow } from "@helix/node/messages.js";
 import { verifyProofOfWork, REGISTRATION_DIFFICULTY_BITS } from "@helix/crypto/pow.js";
 import { fromHex } from "@helix/crypto/hex.js";
-import type { Genome, Helix, HelixKind, Follow } from "@helix/types/index.js";
+import type { Genome, Helix, Follow } from "@helix/types/index.js";
 import { loadOrCreateIdentity, isPublicDiscoveryEnabled } from "./identity";
+import { createBrowserPolyPackAdapters } from "./polypackPersistence";
 import { SearchIndex } from "./searchIndex";
 import type { Notification, Post, User } from "../types";
 
@@ -91,11 +92,10 @@ function decodeReaction(content: string): ReactionContent {
  */
 export class HelixClient {
   private node!: HelixNode;
-  private readonly store = new MemoryStore();
-  private readonly searchIndex = new SearchIndex();
+  private store = new MemoryStore();
+  private searchIndex = new SearchIndex();
   private hlc!: HybridLogicalClock;
   private selfGenome?: Genome;
-  private posts: Helix[] = [];
   /** Every follow event this peer has observed, self-initiated or gossiped in - see
    *  getNotifications(). Structural following/followers state itself still lives in
    *  MemoryStore's FollowGraph; this is purely the timestamped event log for notifications. */
@@ -135,6 +135,14 @@ export class HelixClient {
 
   private async doConnect(): Promise<void> {
     const identity = await loadOrCreateIdentity();
+    const adapters = await createBrowserPolyPackAdapters(identity.peerId.toString());
+    this.store = new MemoryStore({
+      storeAdapter: adapters.storeAdapter,
+      followGraphAdapter: adapters.followGraphAdapter,
+      peakGraphAdapter: adapters.peakGraphAdapter,
+    });
+    this.searchIndex = new SearchIndex(adapters.searchIndexAdapter);
+    await Promise.all([this.store.loadPersistentGraphs(), this.searchIndex.load()]);
     const publicDiscovery = isPublicDiscoveryEnabled();
     this.node = await createHelixNode({ port: 0, privateKey: identity.privateKey, browser: true, publicDiscovery });
     this.hlc = new HybridLogicalClock(this.node.peerId.toString());
@@ -178,7 +186,6 @@ export class HelixClient {
       kind: "profile",
       content: encodeProfile({ displayName }),
     });
-    this.posts.unshift(profilePost);
     this.indexForSearch(profilePost);
     this.notify();
   }
@@ -211,7 +218,6 @@ export class HelixClient {
         throw err;
       }
       this.hlc.update(post.hlcTimestamp);
-      this.posts.unshift(post);
       this.indexForSearch(post);
       this.notify();
     }
@@ -222,10 +228,15 @@ export class HelixClient {
     return !this.store.isSuperseded(post.postId);
   }
 
+  /** App-layer ordering: newest first by HLC (the graph doesn't index timestamps). */
+  private sortNewestFirst(posts: Helix[]): Helix[] {
+    return [...posts].sort((a, b) => HybridLogicalClock.compare(b.hlcTimestamp, a.hlcTimestamp));
+  }
+
   /** Feeds every newly-seen post into the search index - ordinary posts by content,
-   *  profile posts by their (app-layer, decoded) display name. Called alongside every
-   *  `this.posts.unshift(post)`, whether self-authored or received over gossip - see
-   *  src/backend/searchIndex.ts. Fire-and-forget: search results just lag briefly. */
+   *  profile posts by their (app-layer, decoded) display name. Called for every new post,
+   *  whether self-authored or received over gossip - see src/backend/searchIndex.ts.
+   *  Fire-and-forget: search results just lag briefly. */
   private indexForSearch(post: Helix): void {
     if (post.kind === "post") {
       void this.searchIndex.indexPost(post.postId, post.content);
@@ -240,32 +251,29 @@ export class HelixClient {
    *  by id (for provenance) but don't clutter the feed. Likes/boosts/profile records
    *  are a different `kind` and never show up as ordinary posts. */
   getFeedPosts(): Post[] {
-    return this.posts
+    return this.sortNewestFirst(this.store.getAllPosts())
       .filter((post) => post.kind === "post" && !post.parentPostId && this.isCurrent(post))
       .map((post) => this.toPost(post));
   }
 
   getRepliesTo(postId: string): Post[] {
-    return this.posts
-      .filter((post) => post.kind === "post" && post.parentPostId === postId && this.isCurrent(post))
-      .map((post) => this.toPost(post));
+    return this.sortNewestFirst(this.store.getRepliesTo(postId)).map((post) => this.toPost(post));
   }
 
   /** Resolves a possibly-superseded id to its current version before looking it up. */
   getPost(postId: string): Post | undefined {
-    const resolvedId = this.store.getCurrentVersion(postId)?.postId ?? postId;
-    const post = this.posts.find((p) => p.postId === resolvedId);
+    const post = this.store.getCurrentVersion(postId);
     return post ? this.toPost(post) : undefined;
   }
 
   getPostsByAuthor(genome: string): Post[] {
-    return this.posts
-      .filter((post) => post.kind === "post" && post.genome === genome && this.isCurrent(post))
+    return this.sortNewestFirst(this.store.getPostsByGenome(genome))
+      .filter((post) => post.kind === "post" && this.isCurrent(post))
       .map((post) => this.toPost(post));
   }
 
   private getCurrentProfilePost(genome: string): Helix | undefined {
-    return this.posts.find((p) => p.genome === genome && p.kind === "profile" && this.isCurrent(p));
+    return this.store.getProfilePost(genome);
   }
 
   getUser(genome: string): User | undefined {
@@ -302,7 +310,6 @@ export class HelixClient {
       content,
       parentPostId,
     });
-    this.posts.unshift(post);
     this.indexForSearch(post);
     this.notify();
     return this.toPost(post);
@@ -324,7 +331,6 @@ export class HelixClient {
       content,
       recombinesPostId: targetPostId,
     });
-    this.posts.unshift(post);
     this.indexForSearch(post);
     this.notify();
     return this.toPost(post);
@@ -341,9 +347,7 @@ export class HelixClient {
 
   private findOwnReaction(kind: "like" | "boost", targetPostId: string): Helix | undefined {
     if (!this.selfGenome) return undefined;
-    return this.posts.find(
-      (p) => p.kind === kind && p.parentPostId === targetPostId && p.genome === this.selfGenome!.genome && this.isCurrent(p),
-    );
+    return this.store.getReactionsTo(targetPostId, kind).find((p) => p.genome === this.selfGenome!.genome);
   }
 
   /** Sets the caller's like/boost state on a post to `active`. If a reaction already
@@ -355,21 +359,19 @@ export class HelixClient {
     const existing = this.findOwnReaction(kind, targetPostId);
     if (existing) {
       if (decodeReaction(existing.content).active === active) return;
-      const post = await createPostApi(this.node, this.store, this.hlc, {
+      await createPostApi(this.node, this.store, this.hlc, {
         authorGenome: this.selfGenome.genome,
         content: encodeReaction({ active }),
         recombinesPostId: existing.postId,
       });
-      this.posts.unshift(post);
     } else {
       if (!active) return; // nothing to turn off if it was never on
-      const post = await createPostApi(this.node, this.store, this.hlc, {
+      await createPostApi(this.node, this.store, this.hlc, {
         authorGenome: this.selfGenome.genome,
         kind,
         content: encodeReaction({ active: true }),
         parentPostId: targetPostId,
       });
-      this.posts.unshift(post);
     }
     this.notify();
   }
@@ -401,19 +403,20 @@ export class HelixClient {
   }
 
   /** Likes/boosts/replies on your posts, plus new followers - newest first. Derived
-   *  entirely from `this.posts`/`this.followEvents` rather than a separate persisted
-   *  log, same as every other view in this client. Excludes your own reactions to your
-   *  own posts and only counts each reaction/reply chain's current (non-superseded)
-   *  version, so toggling a like off and back on doesn't produce two notifications. */
+   *  from the store's RELATES_TO traversals plus `this.followEvents` rather than a
+   *  separate persisted log, same as every other view in this client. Excludes your
+   *  own reactions to your own posts and only counts each reaction/reply chain's
+   *  current (non-superseded) version, so toggling a like off and back on doesn't
+   *  produce two notifications. */
   getNotifications(): Notification[] {
     if (!this.selfGenome) return [];
     const selfGenome = this.selfGenome.genome;
-    const myPostIds = new Set(this.posts.filter((p) => p.kind === "post" && p.genome === selfGenome).map((p) => p.postId));
+    const myPostIds = new Set(this.store.getPostsByGenome(selfGenome).filter((p) => p.kind === "post").map((p) => p.postId));
 
     type Item = { kind: Notification["kind"]; actorGenome: string; hlcTimestamp: Helix["hlcTimestamp"]; targetPostId?: string };
     const items: Item[] = [];
 
-    for (const p of this.posts) {
+    for (const p of this.store.getAllPosts()) {
       if (p.genome === selfGenome || !this.isCurrent(p) || !p.parentPostId || !myPostIds.has(p.parentPostId)) continue;
       if (p.kind === "like" || p.kind === "boost") {
         if (decodeReaction(p.content).active) {
@@ -451,13 +454,13 @@ export class HelixClient {
   }
 
   /** Full-text search over post content and display names - see src/backend/searchIndex.ts.
-   *  Search hits are resolved back against `this.posts`/`getUser` and filtered to current
+   *  Search hits are resolved back against the store/`getUser` and filtered to current
    *  (non-superseded) versions here, same as every other post-listing getter. */
   async search(query: string, limit = 20): Promise<{ posts: Post[]; users: User[] }> {
     const { postIds, genomes } = await this.searchIndex.search(query, limit);
 
     const posts = postIds
-      .map((id) => this.posts.find((p) => p.postId === id))
+      .map((id) => this.store.getPost(id))
       .filter((p): p is Helix => p !== undefined && p.kind === "post" && this.isCurrent(p))
       .map((p) => this.toPost(p));
 
@@ -469,10 +472,9 @@ export class HelixClient {
   /** Distinct authoring genomes with an active (not toggled-off) reaction - not raw
    *  post count, so an accidental double-click or a toggle-off/on cycle never
    *  double-counts (there's no protocol-level duplicate rejection). */
-  private countActiveReactions(kind: HelixKind, targetPostId: string): number {
+  private countActiveReactions(kind: "like" | "boost", targetPostId: string): number {
     const genomes = new Set<string>();
-    for (const p of this.posts) {
-      if (p.kind !== kind || p.parentPostId !== targetPostId || !this.isCurrent(p)) continue;
+    for (const p of this.store.getReactionsTo(targetPostId, kind)) {
       if (decodeReaction(p.content).active) genomes.add(p.genome);
     }
     return genomes.size;
@@ -492,7 +494,7 @@ export class HelixClient {
       content: post.content,
       timeAgo: formatTimeAgo(post.hlcTimestamp.physical),
       sealed: true,
-      replyCount: this.posts.filter((p) => p.kind === "post" && p.parentPostId === post.postId && this.isCurrent(p)).length,
+      replyCount: this.store.getRepliesTo(post.postId).length,
       boostCount: this.countActiveReactions("boost", post.postId),
       likeCount: this.countActiveReactions("like", post.postId),
       wasEdited: post.recombinesPostId !== undefined,
