@@ -11,6 +11,7 @@ import { verifyProofOfWork, REGISTRATION_DIFFICULTY_BITS } from "@helix/crypto/p
 import { fromHex } from "@helix/crypto/hex.js";
 import type { Genome, Helix, HelixKind } from "@helix/types/index.js";
 import { loadOrCreateIdentity } from "./identity";
+import { SearchIndex } from "./searchIndex";
 import type { Post, User } from "../types";
 
 export { SpamRejectedError };
@@ -89,6 +90,7 @@ function decodeReaction(content: string): ReactionContent {
 export class HelixClient {
   private node!: HelixNode;
   private readonly store = new MemoryStore();
+  private readonly searchIndex = new SearchIndex();
   private hlc!: HybridLogicalClock;
   private selfGenome?: Genome;
   private posts: Helix[] = [];
@@ -157,6 +159,7 @@ export class HelixClient {
       content: encodeProfile({ displayName }),
     });
     this.posts.unshift(profilePost);
+    this.indexForSearch(profilePost);
     this.notify();
   }
 
@@ -166,6 +169,8 @@ export class HelixClient {
       const proofInput = genomeProofInput(fromHex(msg.genome.publicKeyHex), msg.genome.genome);
       if (!verifyProofOfWork(proofInput, msg.genome.powNonce, REGISTRATION_DIFFICULTY_BITS)) return;
       this.store.saveGenome(msg.genome);
+      // Immutable fallback name until (if ever) a 'profile' post overrides it - see getUser().
+      void this.searchIndex.indexUser(msg.genome.genome, msg.genome.displayName);
       this.notify();
     } else if (evt.detail.topic === TOPICS.FOLLOWS) {
       const follow = decodeFollow(evt.detail.data);
@@ -176,6 +181,7 @@ export class HelixClient {
       const post = decodePost(evt.detail.data);
       this.hlc.update(post.hlcTimestamp);
       this.posts.unshift(post);
+      this.indexForSearch(post);
       this.notify();
     }
   }
@@ -183,6 +189,19 @@ export class HelixClient {
   /** True for a post's current (non-superseded) version - see the recombination handling. */
   private isCurrent(post: Helix): boolean {
     return !this.store.isSuperseded(post.postId);
+  }
+
+  /** Feeds every newly-seen post into the search index - ordinary posts by content,
+   *  profile posts by their (app-layer, decoded) display name. Called alongside every
+   *  `this.posts.unshift(post)`, whether self-authored or received over gossip - see
+   *  src/backend/searchIndex.ts. Fire-and-forget: search results just lag briefly. */
+  private indexForSearch(post: Helix): void {
+    if (post.kind === "post") {
+      void this.searchIndex.indexPost(post.postId, post.content);
+    } else if (post.kind === "profile") {
+      const profile = decodeProfile(post.content);
+      if (profile) void this.searchIndex.indexUser(post.genome, profile.displayName);
+    }
   }
 
   /** Top-level posts only - replies are surfaced via getRepliesTo() in the thread view.
@@ -253,6 +272,7 @@ export class HelixClient {
       parentPostId,
     });
     this.posts.unshift(post);
+    this.indexForSearch(post);
     this.notify();
     return this.toPost(post);
   }
@@ -273,6 +293,7 @@ export class HelixClient {
       recombinesPostId: targetPostId,
     });
     this.posts.unshift(post);
+    this.indexForSearch(post);
     this.notify();
     return this.toPost(post);
   }
@@ -345,6 +366,22 @@ export class HelixClient {
   hasBoosted(postId: string): boolean {
     const r = this.findOwnReaction("boost", postId);
     return r !== undefined && decodeReaction(r.content).active;
+  }
+
+  /** Full-text search over post content and display names - see src/backend/searchIndex.ts.
+   *  Search hits are resolved back against `this.posts`/`getUser` and filtered to current
+   *  (non-superseded) versions here, same as every other post-listing getter. */
+  async search(query: string, limit = 20): Promise<{ posts: Post[]; users: User[] }> {
+    const { postIds, genomes } = await this.searchIndex.search(query, limit);
+
+    const posts = postIds
+      .map((id) => this.posts.find((p) => p.postId === id))
+      .filter((p): p is Helix => p !== undefined && p.kind === "post" && this.isCurrent(p))
+      .map((p) => this.toPost(p));
+
+    const users = genomes.map((g) => this.getUser(g)).filter((u): u is User => u !== undefined);
+
+    return { posts, users };
   }
 
   /** Distinct authoring genomes with an active (not toggled-off) reaction - not raw

@@ -5,6 +5,7 @@ import { UserProfileScreen } from "./screens/UserProfileScreen";
 import { ComposeScreen } from "./screens/ComposeScreen";
 import { SettingsScreen } from "./screens/SettingsScreen";
 import { EditProfileScreen } from "./screens/EditProfileScreen";
+import { SearchScreen } from "./screens/SearchScreen";
 import { useHelixState } from "./backend/HelixProvider";
 import { NavRail } from "./components/NavRail";
 import { FeedListPane } from "./components/FeedListPane";
@@ -16,7 +17,8 @@ type Route =
   | { screen: "profile"; userId: string }
   | { screen: "compose"; editingPostId?: string; replyToPostId?: string }
   | { screen: "settings" }
-  | { screen: "editProfile" };
+  | { screen: "editProfile" }
+  | { screen: "search" };
 
 function App() {
   const client = useHelixState();
@@ -28,10 +30,11 @@ function App() {
 
   const handleNavTab = (tab: NavTab) => {
     if (tab === "home") setStack([{ screen: "home" }]);
+    else if (tab === "search") push({ screen: "search" });
     else if (tab === "profile" && client.selfGenomeAddress) {
       setStack([{ screen: "home" }, { screen: "profile", userId: client.selfGenomeAddress }]);
     }
-    // search/notifications have no screen in this pass - intentionally inert
+    // notifications has no screen in this pass - intentionally inert
   };
 
   const handlePublish = async (content: string, editingPostId?: string, replyToPostId?: string) => {
@@ -57,6 +60,7 @@ function App() {
           onOpenAuthor={(userId) => push({ screen: "profile", userId })}
           onCompose={() => push({ screen: "compose" })}
           onNavTab={handleNavTab}
+          onSearch={() => push({ screen: "search" })}
         />
       );
       break;
@@ -111,6 +115,16 @@ function App() {
     case "editProfile":
       screen = <EditProfileScreen onCancel={pop} onSaved={pop} />;
       break;
+    case "search":
+      screen = (
+        <SearchScreen
+          onBack={pop}
+          onOpenPost={(postId) => push({ screen: "detail", postId })}
+          onOpenAuthor={(userId) => push({ screen: "profile", userId })}
+          onNavTab={handleNavTab}
+        />
+      );
+      break;
   }
 
   const showFeedPane = current.screen === "detail" || current.screen === "profile" || current.screen === "compose";
@@ -118,7 +132,11 @@ function App() {
   // editProfile is reached from (and returns to) that same settings flow.
   const showNavRail = current.screen !== "settings" && current.screen !== "editProfile";
   const activeTab: NavTab =
-    current.screen === "profile" && current.userId === client.selfGenomeAddress ? "profile" : "home";
+    current.screen === "search"
+      ? "search"
+      : current.screen === "profile" && current.userId === client.selfGenomeAddress
+        ? "profile"
+        : "home";
 
   return (
     <div className="flex h-full w-full">

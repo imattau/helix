@@ -11,12 +11,14 @@ export function HomeFeedScreen({
   onOpenAuthor,
   onCompose,
   onNavTab,
+  onSearch,
 }: {
   posts: Post[];
   onOpenPost: (postId: string) => void;
   onOpenAuthor: (userId: string) => void;
   onCompose: () => void;
   onNavTab: (tab: NavTab) => void;
+  onSearch: () => void;
 }) {
   return (
     <ScreenFrame>
@@ -25,6 +27,7 @@ export function HomeFeedScreen({
           <Logo size="sm" />
           <button
             type="button"
+            onClick={onSearch}
             className="flex size-[38px] items-center justify-center rounded-full border border-border bg-surface"
             aria-label="Search"
           >
