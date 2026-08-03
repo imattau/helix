@@ -2,6 +2,7 @@ import { multiaddr } from '@multiformats/multiaddr';
 import { multiaddr as multiaddrV13 } from '@multiformats/multiaddr-v13';
 import { generateHelixIdentity } from '../crypto/keys.js';
 import { createHelixNode } from '../node/createNode.js';
+import { connectPublicDiscovery } from '../node/rendezvous.js';
 import { createIpfsNode, type IpfsNode } from '../ipfs/node.js';
 import { MemoryStore } from '../store/memoryStore.js';
 import { MerkleMountainRange } from '../store/mmr.js';
@@ -52,8 +53,12 @@ async function main() {
   const port = Number(args.port ?? 0);
   const isProducer = name === 'alice';
 
+  // Opt-in (see createNode.ts) - joins the public IPFS/libp2p DHT in client mode to
+  // find other Helix peers via rendezvous, beyond this demo's own --bootstrap flag.
+  const publicDiscovery = process.argv.includes('--public-discovery');
+
   const identity = await generateHelixIdentity();
-  const node = await createHelixNode({ port, privateKey: identity.privateKey });
+  const node = await createHelixNode({ port, privateKey: identity.privateKey, publicDiscovery });
   const ipfsNode: IpfsNode = await createIpfsNode();
   const store = new MemoryStore();
   const hlcClock = new HybridLogicalClock(node.peerId.toString());
@@ -214,6 +219,12 @@ async function main() {
       }
     }
     if (lastErr) throw lastErr;
+  }
+
+  if (publicDiscovery) {
+    console.log(`[${name}] [DHT] connecting to the public IPFS/libp2p DHT for rendezvous...`);
+    const peers = await connectPublicDiscovery(node);
+    console.log(`[${name}] [DHT] found and dialed ${peers.length} rendezvous peer(s)`);
   }
 
   // alice (isProducer) is the one who broadcasts time-sensitive things (genesis,

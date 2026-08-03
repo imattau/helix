@@ -1,5 +1,6 @@
 import { multiaddr } from "@multiformats/multiaddr";
 import { createHelixNode, type HelixNode } from "@helix/node/createNode.js";
+import { connectPublicDiscovery } from "@helix/node/rendezvous.js";
 import { MemoryStore } from "@helix/store/memoryStore.js";
 import { HybridLogicalClock } from "@helix/clock/hlc.js";
 import { registerUser, genomeProofInput } from "@helix/api/registerUser.js";
@@ -133,7 +134,7 @@ export class HelixClient {
 
   private async doConnect(): Promise<void> {
     const identity = await loadOrCreateIdentity();
-    this.node = await createHelixNode({ port: 0, privateKey: identity.privateKey, browser: true });
+    this.node = await createHelixNode({ port: 0, privateKey: identity.privateKey, browser: true, publicDiscovery: true });
     this.hlc = new HybridLogicalClock(this.node.peerId.toString());
 
     this.node.services.pubsub.subscribe(TOPICS.GENESIS);
@@ -147,6 +148,16 @@ export class HelixClient {
     } catch (err) {
       console.warn(`[helix] couldn't dial bootstrap peer ${bootstrap} - continuing standalone`, err);
     }
+
+    // Best-effort: find other Helix peers via the public IPFS/libp2p DHT (client-mode
+    // only - see createNode.ts), beyond the single hardcoded bootstrap above. A browser
+    // tab can't accept inbound connections at all, so this can only ever dial *into*
+    // publicly-reachable Helix nodes (e.g. another peer:a/peer:b-style deployment) -
+    // same one-directional constraint the hardcoded bootstrap already has. Doesn't
+    // block startup on it - fires and forgets, since the public DHT can be slow.
+    connectPublicDiscovery(this.node).catch((err) => {
+      console.warn(`[helix] DHT rendezvous discovery failed - continuing without it`, err);
+    });
   }
 
   /** Registers under `displayName` once connect() has finished, then creates the
