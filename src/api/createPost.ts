@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import { to_base4, from_base4 } from '../math/base4.js';
 import { calculate_entropy } from '../math/entropy.js';
 import { calculate_linking_number } from '../math/linking.js';
@@ -34,6 +33,10 @@ export interface CreatePostOptions {
    * `ipfsCid` is opt-in and passed through as-is if the caller already published to IPFS
    * themselves (createPost stays IPFS-unaware, same as it never validates sourceUrl). */
   attachment?: { bytes: Uint8Array; mimeType: string; sourceUrl: string; ipfsCid?: string };
+  /** "Edit" an earlier post by the same author - see the recombination handling below.
+   * Mutually exclusive with `parentPostId`: the new post's position (parentPostId/writhe)
+   * is derived from the target post being recombined, not chosen by the caller. */
+  recombinesPostId?: string;
 }
 
 export async function createPost(
@@ -42,9 +45,31 @@ export async function createPost(
   hlcClock: HybridLogicalClock,
   opts: CreatePostOptions,
 ): Promise<Helix> {
+  if (opts.recombinesPostId && opts.parentPostId) {
+    throw new Error('createPost: recombinesPostId and parentPostId are mutually exclusive');
+  }
+
   const entropy = calculate_entropy(opts.content);
   if (entropy < ENTROPY_THRESHOLD) {
     throw new SpamRejectedError(entropy);
+  }
+
+  // Recombination ("edit"): a new post that supersedes an earlier one by the same
+  // author. The original is never mutated - once its TAD closes, its Merkle root is
+  // folded into the MMR and every proof issued against it depends on the content never
+  // changing (see src/api/query.ts). Readers follow `recombinesPostId` forward instead.
+  let recombinationTarget: Helix | undefined;
+  if (opts.recombinesPostId) {
+    recombinationTarget = store.getPost(opts.recombinesPostId);
+    if (!recombinationTarget) {
+      throw new Error(`createPost: recombination target ${opts.recombinesPostId} not found`);
+    }
+    if (recombinationTarget.genome !== opts.authorGenome) {
+      throw new Error('createPost: cannot recombine a post authored by a different genome');
+    }
+    if (store.isSuperseded(opts.recombinesPostId)) {
+      throw new Error(`createPost: ${opts.recombinesPostId} has already been recombined - one linear edit chain per post`);
+    }
   }
 
   // hash/size are always computed from the actual bytes, never trusted from the caller -
@@ -62,8 +87,14 @@ export async function createPost(
   const checksum = gf4Checksum(contentHashBase4);
 
   let writhe = 0;
+  let parentPostId = opts.parentPostId;
   let parent: Helix | undefined;
-  if (opts.parentPostId) {
+  if (recombinationTarget) {
+    // Continuity, not reply depth: a recombination replaces a tree node in place
+    // rather than adding a new one, so it inherits the target's position/writhe.
+    parentPostId = recombinationTarget.parentPostId;
+    writhe = recombinationTarget.writhe;
+  } else if (opts.parentPostId) {
     parent = store.getPost(opts.parentPostId);
     if (!parent) {
       throw new Error(`createPost: parent post ${opts.parentPostId} not found`);
@@ -73,10 +104,16 @@ export async function createPost(
 
   // causalParents records what the author knew about at creation time: their own
   // previous post (their local clock is already monotonic w.r.t. it, so it needs no
-  // HLC merge) plus a reply's parent (merged below, since it may be from another peer).
+  // HLC merge), plus a reply's parent or a recombination's target (merged below,
+  // since either may be from another peer).
   const authorLastPost = store.getLatestPostForGenome(opts.authorGenome);
-  const causalParents = [...new Set([authorLastPost?.postId, opts.parentPostId].filter((id): id is string => id !== undefined))];
-  const hlcTimestamp = parent ? hlcClock.update(parent.hlcTimestamp) : hlcClock.now();
+  const causalParents = [
+    ...new Set(
+      [authorLastPost?.postId, opts.parentPostId, opts.recombinesPostId].filter((id): id is string => id !== undefined),
+    ),
+  ];
+  const causalPost = parent ?? recombinationTarget;
+  const hlcTimestamp = causalPost ? hlcClock.update(causalPost.hlcTimestamp) : hlcClock.now();
 
   let tad = store.getOpenTad(opts.authorGenome);
   if (!tad) {
@@ -86,10 +123,10 @@ export async function createPost(
   const twist = tad.posts.length;
 
   const post: Helix = {
-    postId: randomUUID(),
+    postId: globalThis.crypto.randomUUID(),
     genome: opts.authorGenome,
     content: opts.content,
-    parentPostId: opts.parentPostId,
+    parentPostId,
     twist,
     writhe,
     linkingNumber: calculate_linking_number({ postsInTad: twist + 1, totalReplyDepth: writhe }),
@@ -99,6 +136,7 @@ export async function createPost(
     hlcTimestamp,
     causalParents,
     attachment,
+    recombinesPostId: opts.recombinesPostId,
   };
 
   tad.posts.push(post);

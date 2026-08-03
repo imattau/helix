@@ -21,4 +21,6 @@ export interface Post {
   replyCount: number;
   boostCount: number;
   likeCount: number;
+  /** True when this post is a recombination (edit) of an earlier post - see HelixClient.recombine. */
+  wasEdited?: boolean;
 }

@@ -111,6 +111,7 @@ describe('two peers over libp2p', () => {
     // own receiver, not merely by whether alice bothered to compute one honestly
     const forgedGenome: Genome = {
       genome: to_base4(derive_subkey(fromHex(genome.publicKeyHex), 'genome:attacker')),
+      displayName: 'attacker',
       publicKeyHex: genome.publicKeyHex,
       peerId: genome.peerId,
       powNonce: 0, // ~1/65536 chance of accidentally satisfying the 16-bit difficulty

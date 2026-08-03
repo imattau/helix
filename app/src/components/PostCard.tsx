@@ -39,6 +39,7 @@ export function PostCard({
             </div>
             <span className="text-xs text-ink-muted">
               {post.author.handle} • {post.timeAgo}
+              {post.wasEdited && " • Edited"}
             </span>
           </div>
         </button>

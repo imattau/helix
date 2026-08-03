@@ -2,7 +2,8 @@ import { useState } from "react";
 import { ShieldAlert, GalleryThumbnails, Link2, Hash, MapPin } from "lucide-react";
 import { ScreenFrame } from "../components/ScreenFrame";
 import { Avatar } from "../components/Avatar";
-import { currentUser } from "../data/mockData";
+import { useHelixState } from "../backend/HelixProvider";
+import type { Post } from "../types";
 
 const MAX_LENGTH = 280;
 
@@ -28,10 +29,20 @@ function CountRing({ count, max }: { count: number; max: number }) {
   );
 }
 
-export function ComposeScreen({ onCancel, onPublish }: { onCancel: () => void; onPublish: (content: string) => void }) {
-  const [content, setContent] = useState(
-    "Working on a new append-only proof system. Every state change is a permanent block of historical trust.",
-  );
+export function ComposeScreen({
+  onCancel,
+  onPublish,
+  editingPost,
+  replyToPost,
+}: {
+  onCancel: () => void;
+  onPublish: (content: string) => void;
+  editingPost?: Post;
+  replyToPost?: Post;
+}) {
+  const client = useHelixState();
+  const currentUser = client.getSelfUser();
+  const [content, setContent] = useState(editingPost?.content ?? "");
 
   return (
     <ScreenFrame>
@@ -46,30 +57,52 @@ export function ComposeScreen({ onCancel, onPublish }: { onCancel: () => void; o
             disabled={!content.trim() || content.length > MAX_LENGTH}
             className="rounded-[20px] bg-accent px-[18px] py-2 text-[13px] font-bold text-white disabled:opacity-40"
           >
-            Publish
+            {editingPost ? "Save Edit" : replyToPost ? "Reply" : "Publish"}
           </button>
         </div>
 
         <div className="flex w-full items-start gap-2.5 border-b border-warning/25 bg-danger-soft p-4">
           <ShieldAlert size={18} className="mt-0.5 shrink-0 text-warning" />
           <p className="flex-1 text-xs leading-relaxed text-warning">
-            Posts on Helix are permanent, append-only records. They cannot be edited, modified, or deleted once
-            published on-chain.
+            {editingPost ? (
+              <>
+                This publishes a new version. The original stays on the public ledger, unchanged and still
+                provable — recombining doesn't erase it.
+              </>
+            ) : (
+              <>
+                Posts on Helix are permanent, append-only records. They cannot be edited, modified, or deleted once
+                published on-chain.
+              </>
+            )}
           </p>
         </div>
 
-        <div className="flex w-full flex-col gap-4 p-5">
-          <div className="flex items-center gap-3">
-            <Avatar user={currentUser} size="md" />
-            <div className="flex flex-col gap-0.5">
-              <span className="text-sm font-bold text-ink">{currentUser.displayName}</span>
-              <span className="text-xs text-accent">Public Sealed Post</span>
-            </div>
+        {replyToPost && (
+          <div className="flex w-full items-start gap-2.5 border-b border-border px-5 py-3">
+            <Avatar user={replyToPost.author} size="sm" />
+            <p className="flex-1 text-xs leading-relaxed text-ink-muted">
+              Replying to <span className="font-semibold text-ink">{replyToPost.author.handle}</span>
+              <br />
+              {replyToPost.content}
+            </p>
           </div>
+        )}
+
+        <div className="flex w-full flex-col gap-4 p-5">
+          {currentUser && (
+            <div className="flex items-center gap-3">
+              <Avatar user={currentUser} size="md" />
+              <div className="flex flex-col gap-0.5">
+                <span className="text-sm font-bold text-ink">{currentUser.displayName}</span>
+                <span className="text-xs text-accent">Public Sealed Post</span>
+              </div>
+            </div>
+          )}
           <textarea
             value={content}
             onChange={(e) => setContent(e.target.value)}
-            placeholder="What's permanently on your mind?"
+            placeholder={replyToPost ? "Draft permanent reply..." : "What's permanently on your mind?"}
             rows={8}
             className="w-full resize-none bg-transparent text-base leading-relaxed text-ink placeholder:text-ink-muted focus:outline-none"
             autoFocus

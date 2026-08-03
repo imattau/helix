@@ -254,6 +254,7 @@ async function main() {
     // almost-certainly-invalid nonce and let bob's own handler reject it.
     const forgedGenome: Genome = {
       genome: to_base4(derive_subkey(fromHex(genome.publicKeyHex), 'genome:attacker')),
+      displayName: 'attacker',
       publicKeyHex: genome.publicKeyHex,
       peerId: genome.peerId,
       powNonce: 0, // ~1/65536 chance of accidentally being valid at 16-bit difficulty

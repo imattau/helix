@@ -25,6 +25,11 @@ export function getSyncState(store: HelixStore, genome: string): MMRSyncState {
   return store.getOrCreateMmr(genome).getSyncState();
 }
 
+/** Follows a post's recombination chain forward to its current (non-superseded) version. */
+export function resolveCurrentVersion(store: HelixStore, postId: string): Helix | undefined {
+  return store.getCurrentVersion(postId);
+}
+
 export interface PostMerkleProof {
   post: Helix;
   tadMerkleRootHex: string;

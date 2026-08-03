@@ -1,11 +1,9 @@
 import { createLibp2p } from 'libp2p';
-import { tcp } from '@libp2p/tcp';
 import { webSockets } from '@libp2p/websockets';
 import { yamux } from '@chainsafe/libp2p-yamux';
 import { noise } from '@chainsafe/libp2p-noise';
 import { gossipsub, type GossipSub } from '@chainsafe/libp2p-gossipsub';
 import { identify, type Identify } from '@libp2p/identify';
-import { mdns } from '@libp2p/mdns';
 import type { Ed25519PrivateKey } from '@libp2p/interface';
 
 /**
@@ -23,8 +21,32 @@ import type { Ed25519PrivateKey } from '@libp2p/interface';
  * available there) - see the project plan for the PWA/mobile/desktop UI work this is
  * laying the groundwork for. The CLI demo still dials over TCP; the WS listener is
  * additive and unused by it today.
+ *
+ * NOTE on `browser`: a browser tab can dial out over WebSocket but can never accept an
+ * inbound connection (no raw sockets, no listen capability at all), so the in-browser
+ * Helix client (app/src/backend/client.ts) needs a node with no listen addresses and no
+ * tcp()/mdns() (both Node-only - mdns needs UDP multicast, tcp needs net.Socket) - it
+ * only ever dials a bootstrap peer over webSockets(). tcp()/mdns() are imported
+ * dynamically, only on the non-browser path, so a browser bundle never even pulls in
+ * their Node-only dependencies (dgram, net) - a static top-level import would otherwise
+ * get bundled (as dead code) into every browser build.
  */
-export async function createHelixNode(opts: { port: number; privateKey: Ed25519PrivateKey }) {
+export async function createHelixNode(opts: { port: number; privateKey: Ed25519PrivateKey; browser?: boolean }) {
+  if (opts.browser) {
+    return createLibp2p({
+      privateKey: opts.privateKey,
+      transports: [webSockets()],
+      streamMuxers: [yamux()],
+      connectionEncrypters: [noise()],
+      services: {
+        pubsub: gossipsub({ allowPublishToZeroTopicPeers: true, emitSelf: false }),
+        identify: identify(),
+      },
+    });
+  }
+
+  const [{ tcp }, { mdns }] = await Promise.all([import('@libp2p/tcp'), import('@libp2p/mdns')]);
+
   // port 0 means "OS-assigned" (used throughout the test suite) - each listen address
   // gets its own independently OS-assigned port in that case, rather than colliding on
   // a fixed +1 offset that only makes sense for the CLI's explicit port numbers.

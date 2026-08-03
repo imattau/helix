@@ -2,6 +2,7 @@ import { Search, PlusCircle } from "lucide-react";
 import { ScreenFrame } from "../components/ScreenFrame";
 import { PostCard } from "../components/PostCard";
 import { BottomNav, type NavTab } from "../components/BottomNav";
+import { Logo } from "../components/Logo";
 import type { Post } from "../types";
 
 export function HomeFeedScreen({
@@ -21,10 +22,7 @@ export function HomeFeedScreen({
     <ScreenFrame>
       <div className="flex flex-1 flex-col overflow-y-auto">
         <div className="flex items-center justify-between border-b border-border px-5 pb-4 pt-3">
-          <div className="flex items-center gap-1.5">
-            <span className="size-2.5 rounded-full bg-accent" />
-            <span className="font-display text-xl font-extrabold text-ink">HELIX</span>
-          </div>
+          <Logo size="sm" />
           <button
             type="button"
             className="flex size-[38px] items-center justify-center rounded-full border border-border bg-surface"

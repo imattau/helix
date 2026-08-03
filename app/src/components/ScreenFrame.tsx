@@ -8,7 +8,7 @@ import type { ReactNode } from "react";
  */
 export function ScreenFrame({ children }: { children: ReactNode }) {
   return (
-    <div className="mx-auto flex h-full w-full max-w-[402px] flex-col overflow-hidden bg-bg text-ink">
+    <div className="mx-auto flex h-full w-full max-w-[402px] flex-col overflow-hidden bg-bg text-ink lg:mx-0 lg:max-w-[1088px] lg:px-10">
       {children}
     </div>
   );

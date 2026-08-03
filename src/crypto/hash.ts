@@ -1,5 +1,5 @@
-import { createHash } from 'node:crypto';
+import { sha256 as nobleSha256 } from '@noble/hashes/sha2';
 
 export function sha256(data: Uint8Array): Uint8Array {
-  return new Uint8Array(createHash('sha256').update(data).digest());
+  return nobleSha256(data);
 }

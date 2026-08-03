@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import { MerkleMountainRange } from './mmr.js';
 import { FollowGraph } from '../social/followGraph.js';
 import type { Genome, Helix, TAD } from '../types/index.js';
@@ -21,6 +20,10 @@ export interface HelixStore {
   getClosedTad(genomeAddress: string, tadIndex: number): TAD | undefined;
   getLatestPostForGenome(genomeAddress: string): Helix | undefined;
   getFollowGraph(): FollowGraph;
+  /** True once some other post's `recombinesPostId` points at this one - see createPost.ts. */
+  isSuperseded(postId: string): boolean;
+  /** Walks the recombination chain forward to the current (non-superseded) version. */
+  getCurrentVersion(postId: string): Helix | undefined;
 }
 
 export class MemoryStore implements HelixStore {
@@ -32,6 +35,7 @@ export class MemoryStore implements HelixStore {
   private closedTadsByGenome = new Map<string, TAD[]>();
   private closedTadIdsSeen = new Set<string>();
   private followGraph = new FollowGraph();
+  private supersededBy = new Map<string, string>(); // originalPostId -> newer postId
 
   saveGenome(genome: Genome): void {
     this.genomes.set(genome.genome, genome);
@@ -54,7 +58,7 @@ export class MemoryStore implements HelixStore {
 
   createTad(genomeAddress: string): TAD {
     const tad: TAD = {
-      tadId: `${genomeAddress}.${randomUUID()}`,
+      tadId: `${genomeAddress}.${globalThis.crypto.randomUUID()}`,
       genome: genomeAddress,
       merkleRootHex: '00'.repeat(32),
       posts: [],
@@ -86,7 +90,22 @@ export class MemoryStore implements HelixStore {
 
   savePost(post: Helix, tad: TAD): void {
     this.posts.set(post.postId, post);
+    if (post.recombinesPostId) {
+      this.supersededBy.set(post.recombinesPostId, post.postId);
+    }
     this.saveTad(tad);
+  }
+
+  isSuperseded(postId: string): boolean {
+    return this.supersededBy.has(postId);
+  }
+
+  getCurrentVersion(postId: string): Helix | undefined {
+    let id = postId;
+    while (this.supersededBy.has(id)) {
+      id = this.supersededBy.get(id)!;
+    }
+    return this.getPost(id);
   }
 
   getOrCreateMmr(genomeAddress: string): MerkleMountainRange {

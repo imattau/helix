@@ -7,6 +7,7 @@ export type Writhe = number;
 
 export interface Genome {
   genome: string; // base-4 string
+  displayName: string;
   publicKeyHex: string;
   peerId: string;
   /** Proof-of-work nonce proving registration cost was paid — see src/crypto/pow.ts. */
@@ -49,6 +50,10 @@ export interface Helix {
   /** Post IDs the author knew about at creation time: their own previous post, plus a reply's parent. */
   causalParents: string[];
   attachment?: Attachment;
+  /** Set when this post supersedes an earlier one by the same author (an "edit") -
+   *  see src/api/createPost.ts's recombination handling. The original post is never
+   *  mutated or removed; readers follow this pointer forward for the current version. */
+  recombinesPostId?: string;
 }
 
 export interface TAD {

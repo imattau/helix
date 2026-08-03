@@ -1,10 +1,10 @@
 import { useState } from "react";
-import { ArrowLeft, MoreVertical, Calendar, BadgeCheck } from "lucide-react";
+import { ArrowLeft, MoreVertical, BadgeCheck } from "lucide-react";
 import { ScreenFrame } from "../components/ScreenFrame";
 import { Avatar } from "../components/Avatar";
 import { PostCard } from "../components/PostCard";
 import { BottomNav, type NavTab } from "../components/BottomNav";
-import { getUserById, profileFeedPosts } from "../data/mockData";
+import { useHelixState } from "../backend/HelixProvider";
 
 function formatCount(n: number): string {
   return n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n);
@@ -23,9 +23,26 @@ export function UserProfileScreen({
   onOpenPost: (postId: string) => void;
   onNavTab: (tab: NavTab) => void;
 }) {
-  const user = getUserById(userId);
+  const client = useHelixState();
+  const user = client.getUser(userId);
   const [tab, setTab] = useState<"posts" | "boosts">("posts");
-  const posts = profileFeedPosts.filter((p) => p.author.id === user.id);
+  const posts = user ? client.getPostsByAuthor(user.id) : [];
+  const isSelf = user?.id === client.selfGenomeAddress;
+  const isFollowing = user ? client.isFollowing(user.id) : false;
+
+  if (!user) {
+    return (
+      <ScreenFrame>
+        <div className="flex flex-1 flex-col items-center justify-center gap-2 p-6 text-center">
+          <p className="text-sm text-ink-muted">This profile hasn't been observed on the network yet.</p>
+          <button type="button" onClick={onBack} className="text-sm font-semibold text-accent">
+            Go back
+          </button>
+        </div>
+        <BottomNav active="profile" onSelect={onNavTab} />
+      </ScreenFrame>
+    );
+  }
 
   return (
     <ScreenFrame>
@@ -43,9 +60,16 @@ export function UserProfileScreen({
         <div className="flex w-full flex-col gap-4 border-b border-border bg-surface p-5">
           <div className="flex w-full items-center justify-between">
             <Avatar user={user} size="xl" />
-            <button type="button" className="rounded-[20px] bg-accent px-[18px] py-2 text-[13px] font-bold text-white">
-              Following
-            </button>
+            {!isSelf && (
+              <button
+                type="button"
+                onClick={() => client.follow(user.id)}
+                disabled={isFollowing}
+                className="rounded-[20px] bg-accent px-[18px] py-2 text-[13px] font-bold text-white disabled:opacity-60"
+              >
+                {isFollowing ? "Following" : "Follow"}
+              </button>
+            )}
           </div>
           <div className="flex flex-col gap-1">
             <div className="flex items-center gap-1.5">
@@ -54,13 +78,6 @@ export function UserProfileScreen({
             </div>
             <span className="text-sm text-ink-muted">{user.handle}</span>
           </div>
-          {user.bio && <p className="text-sm leading-relaxed text-ink">{user.bio}</p>}
-          {user.joined && (
-            <div className="flex items-center gap-1">
-              <Calendar size={14} className="text-ink-muted" />
-              <span className="text-xs text-ink-muted">{user.joined}</span>
-            </div>
-          )}
           <div className="flex items-center gap-4 whitespace-nowrap text-[13px] text-ink-muted">
             <p>
               <span className="font-bold text-ink">{formatCount(user.followingCount ?? 0)}</span> Following

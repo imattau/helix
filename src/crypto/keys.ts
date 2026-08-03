@@ -1,4 +1,5 @@
-import { hkdfSync } from 'node:crypto';
+import { hkdf } from '@noble/hashes/hkdf';
+import { sha256 } from '@noble/hashes/sha2';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { Ed25519PrivateKey, PeerId } from '@libp2p/interface';
@@ -23,12 +24,11 @@ const GENOME_HKDF_INFO = new TextEncoder().encode('helix-genome-v1');
  * intentional, versioned transform rather than "just the raw public key re-encoded".
  */
 export function derive_subkey(publicKeyBytes: Uint8Array, salt: string, lengthBytes = 8): Uint8Array {
-  const derived = hkdfSync(
-    'sha256',
+  return hkdf(
+    sha256,
     publicKeyBytes,
     new TextEncoder().encode(salt),
     GENOME_HKDF_INFO,
     lengthBytes,
   );
-  return new Uint8Array(derived);
 }

@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@0xx0lostcause0xx0/polypack": "^2.5.0",
+    "@noble/hashes": "^1.8.0",
     "@chainsafe/libp2p-gossipsub": "^14.1.2",
     "@chainsafe/libp2p-noise": "^16.1.5",
     "@chainsafe/libp2p-yamux": "^7.0.4",

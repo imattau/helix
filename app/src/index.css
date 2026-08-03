@@ -24,6 +24,10 @@
   --font-sans: "Manrope", ui-sans-serif, system-ui, sans-serif;
   --font-display: "Unbounded", ui-sans-serif, system-ui, sans-serif;
   --font-mono: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  /* Dedicated to the HELIX wordmark only - the brand identity system page
+   * (node 14:2) specifies Outfit ExtraBold specifically for the logo lockup,
+   * distinct from --font-display (Unbounded) used for in-app headings. */
+  --font-logo: "Outfit", ui-sans-serif, system-ui, sans-serif;
 }
 
 html,

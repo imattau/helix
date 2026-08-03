@@ -12,7 +12,7 @@ const TABS: { id: NavTab; icon: ComponentType<{ size?: number; className?: strin
 
 export function BottomNav({ active, onSelect }: { active: NavTab; onSelect: (tab: NavTab) => void }) {
   return (
-    <div className="w-full border-t border-border bg-bg">
+    <div className="w-full border-t border-border bg-bg lg:hidden">
       <div className="flex h-[60px] items-center justify-between px-6">
         {TABS.map(({ id, icon: Icon }) => {
           const isActive = id === active;

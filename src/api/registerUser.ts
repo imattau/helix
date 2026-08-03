@@ -56,6 +56,7 @@ export async function registerUser(
 
   const genomeRecord: Genome = {
     genome,
+    displayName,
     publicKeyHex: toHex(publicKeyBytes),
     peerId: node.peerId.toString(),
     powNonce,

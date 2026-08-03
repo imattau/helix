@@ -1,9 +1,10 @@
-import { ArrowLeft, MessageCircleReply, RefreshCw, Heart, Send, SendHorizontal } from "lucide-react";
+import { useState } from "react";
+import { ArrowLeft, MessageCircleReply, RefreshCw, Heart, Send, SendHorizontal, PenLine } from "lucide-react";
 import { ScreenFrame } from "../components/ScreenFrame";
 import { Avatar } from "../components/Avatar";
 import { SealedBadge } from "../components/SealedBadge";
 import { PostCard } from "../components/PostCard";
-import { postReplies, currentUser } from "../data/mockData";
+import { useHelixState } from "../backend/HelixProvider";
 import type { Post } from "../types";
 
 export function PostDetailScreen({
@@ -11,12 +12,29 @@ export function PostDetailScreen({
   onBack,
   onOpenPost,
   onOpenAuthor,
+  onEdit,
+  onReply,
 }: {
   post: Post;
   onBack: () => void;
   onOpenPost: (postId: string) => void;
   onOpenAuthor: (userId: string) => void;
+  onEdit: (postId: string) => void;
+  onReply: (postId: string) => void;
 }) {
+  const client = useHelixState();
+  const replies = client.getRepliesTo(post.id);
+  const selfUser = client.getSelfUser();
+  const isOwnPost = post.author.id === client.selfGenomeAddress;
+  const [reply, setReply] = useState("");
+
+  const submitReply = () => {
+    const content = reply.trim();
+    if (!content) return;
+    client.publish(content, post.id);
+    setReply("");
+  };
+
   return (
     <ScreenFrame>
       <div className="flex flex-1 flex-col overflow-y-auto">
@@ -41,7 +59,10 @@ export function PostDetailScreen({
           <p className="text-base leading-relaxed text-ink">{post.content}</p>
 
           <div className="flex w-full items-center justify-between">
-            <span className="text-[13px] text-ink-muted">{post.timestamp ?? post.timeAgo}</span>
+            <span className="text-[13px] text-ink-muted">
+              {post.timestamp ?? post.timeAgo}
+              {post.wasEdited && " • Edited"}
+            </span>
             {post.sealed && <SealedBadge size="lg" />}
           </div>
 
@@ -62,28 +83,51 @@ export function PostDetailScreen({
           <div className="h-px w-full bg-border" />
 
           <div className="flex w-full items-center justify-between px-3">
-            <MessageCircleReply size={22} className="text-ink-muted" />
+            {/* Mobile replies use the persistent bottom bar; desktop opens the full compose panel. */}
+            <MessageCircleReply size={22} className="text-ink-muted lg:hidden" />
+            <button type="button" onClick={() => onReply(post.id)} aria-label="Reply" className="hidden lg:inline-flex">
+              <MessageCircleReply size={22} className="text-ink-muted" />
+            </button>
             <RefreshCw size={22} className="text-ink-muted" />
             <Heart size={22} className="text-ink-muted" />
             <Send size={22} className="text-ink-muted" />
+            {isOwnPost && (
+              <button type="button" onClick={() => onEdit(post.id)} aria-label="Edit post">
+                <PenLine size={22} className="text-ink-muted" />
+              </button>
+            )}
           </div>
         </div>
 
         <div className="flex flex-col gap-3 p-4">
           <p className="text-sm font-bold text-ink-muted">Replies</p>
-          {postReplies.map((reply) => (
-            <PostCard key={reply.id} post={reply} showSealedBadge={false} onOpen={onOpenPost} onOpenAuthor={onOpenAuthor} />
+          {replies.length === 0 && <p className="text-sm text-ink-faint">No replies yet.</p>}
+          {replies.map((r) => (
+            <PostCard key={r.id} post={r} showSealedBadge={false} onOpen={onOpenPost} onOpenAuthor={onOpenAuthor} />
           ))}
         </div>
       </div>
 
       <div className="w-full border border-border">
         <div className="flex w-full items-center gap-2.5 bg-surface p-3">
-          <Avatar user={currentUser} size="sm" />
-          <div className="flex flex-1 items-center justify-between rounded-full bg-surface-alt px-3 py-2">
-            <span className="text-[13px] text-ink-muted">Draft permanent reply...</span>
-            <SendHorizontal size={16} className="text-accent" />
-          </div>
+          {selfUser && <Avatar user={selfUser} size="sm" />}
+          <form
+            className="flex flex-1 items-center justify-between rounded-full bg-surface-alt px-3 py-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              submitReply();
+            }}
+          >
+            <input
+              value={reply}
+              onChange={(e) => setReply(e.target.value)}
+              placeholder="Draft permanent reply..."
+              className="w-full bg-transparent text-[13px] text-ink placeholder:text-ink-muted focus:outline-none"
+            />
+            <button type="submit" aria-label="Send reply">
+              <SendHorizontal size={16} className="text-accent" />
+            </button>
+          </form>
         </div>
       </div>
     </ScreenFrame>
