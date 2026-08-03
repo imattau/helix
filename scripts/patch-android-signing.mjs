@@ -48,8 +48,8 @@ const SIGNING_BLOCK = `    signingConfigs {
             keyPassword = keystoreProperties.getProperty("password")
             storePassword = keystoreProperties.getProperty("password")
             // PKCS12 is what scripts/create-android-keystore.sh's openssl path produces;
-            // AGP infers the type from the file extension and defaults `.keystore` to JKS,
-            // which would fail to load it. Switch to "JKS" if you generate via keytool instead.
+            // AGP infers the type from the file extension and defaults .keystore files to
+            // JKS, which would fail to load it. Switch to "JKS" if you generate via keytool instead.
             storeType = "PKCS12"
             val storePath = keystoreProperties.getProperty("storeFile")
             if (keystorePropertiesFile.exists() && storePath != null) {
