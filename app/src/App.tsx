@@ -7,6 +7,7 @@ import { SettingsScreen } from "./screens/SettingsScreen";
 import { EditProfileScreen } from "./screens/EditProfileScreen";
 import { SearchScreen } from "./screens/SearchScreen";
 import { NotificationsScreen } from "./screens/NotificationsScreen";
+import { BackupKeyScreen } from "./screens/BackupKeyScreen";
 import { useHelixState } from "./backend/HelixProvider";
 import { NavRail } from "./components/NavRail";
 import { FeedListPane } from "./components/FeedListPane";
@@ -20,7 +21,8 @@ type Route =
   | { screen: "settings" }
   | { screen: "editProfile" }
   | { screen: "search" }
-  | { screen: "notifications" };
+  | { screen: "notifications" }
+  | { screen: "backupKey" };
 
 function App() {
   const client = useHelixState();
@@ -112,7 +114,16 @@ function App() {
       break;
     }
     case "settings":
-      screen = <SettingsScreen onBack={pop} onEditProfile={() => push({ screen: "editProfile" })} />;
+      screen = (
+        <SettingsScreen
+          onBack={pop}
+          onEditProfile={() => push({ screen: "editProfile" })}
+          onBackupKey={() => push({ screen: "backupKey" })}
+        />
+      );
+      break;
+    case "backupKey":
+      screen = <BackupKeyScreen mode="settings" onDone={pop} />;
       break;
     case "editProfile":
       screen = <EditProfileScreen onCancel={pop} onSaved={pop} />;
@@ -141,7 +152,7 @@ function App() {
   const showFeedPane = current.screen === "detail" || current.screen === "profile" || current.screen === "compose";
   // helix-desktop-settings has its own topbar + sidebar, no nav-rail (see SettingsScreen.tsx) -
   // editProfile is reached from (and returns to) that same settings flow.
-  const showNavRail = current.screen !== "settings" && current.screen !== "editProfile";
+  const showNavRail = current.screen !== "settings" && current.screen !== "editProfile" && current.screen !== "backupKey";
   const activeTab: NavTab =
     current.screen === "search" || current.screen === "notifications"
       ? current.screen

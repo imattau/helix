@@ -1,24 +1,30 @@
 import { useState } from "react";
 import { ShieldAlert } from "lucide-react";
 import { Logo } from "../components/Logo";
+import { BackupKeyScreen } from "./BackupKeyScreen";
 
 const MAX_LENGTH = 32;
 
 /**
- * First-run only (see HelixProvider) - collects a display name before
- * registration. This is the single most irreversible action in the app:
- * the name is baked into the genome address derivation and broadcast once
- * in the immutable Genesis record, with no rename mechanism in the
- * protocol - so it gets the same honest permanence warning as compose/
- * recombine, not a softer one.
+ * First-run only (see HelixProvider) - collects a display name, then requires
+ * the user to acknowledge their private key backup (BackupKeyScreen) before
+ * registering. The name is the single most irreversible protocol-level choice
+ * (baked into the genome address, broadcast once in the immutable Genesis
+ * record, no rename mechanism) - but losing the key entirely is worse, since
+ * that's the whole identity, not just its display name, so backup is a hard
+ * gate here rather than something to discover later in Settings.
  */
 export function OnboardingScreen({ onSubmit }: { onSubmit: (name: string) => void }) {
+  const [step, setStep] = useState<"name" | "backup">("name");
   const [name, setName] = useState("");
 
-  const submit = () => {
-    const trimmed = name.trim();
-    if (!trimmed) return;
-    onSubmit(trimmed);
+  if (step === "backup") {
+    return <BackupKeyScreen mode="onboarding" onDone={() => onSubmit(name.trim())} />;
+  }
+
+  const next = () => {
+    if (!name.trim()) return;
+    setStep("backup");
   };
 
   return (
@@ -38,7 +44,7 @@ export function OnboardingScreen({ onSubmit }: { onSubmit: (name: string) => voi
           className="flex w-full flex-col gap-3"
           onSubmit={(e) => {
             e.preventDefault();
-            submit();
+            next();
           }}
         >
           <input
@@ -53,7 +59,7 @@ export function OnboardingScreen({ onSubmit }: { onSubmit: (name: string) => voi
             disabled={!name.trim()}
             className="w-full rounded-xl bg-accent px-4 py-3 text-sm font-bold text-white disabled:opacity-40"
           >
-            Get Started
+            Continue
           </button>
         </form>
       </div>

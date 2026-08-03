@@ -32,6 +32,18 @@ export async function loadOrCreateIdentity(): Promise<HelixIdentity> {
 }
 
 /**
+ * The raw Ed25519 private key as hex, for the user to back up themselves - this is
+ * the ONLY copy of their identity; there's no server-side account to recover it
+ * from, and localStorage can be cleared (or never synced to a new device) without
+ * warning. Idempotent with loadOrCreateIdentity() - reads the existing key if one
+ * is already stored, generates one otherwise.
+ */
+export async function exportPrivateKeyHex(): Promise<string> {
+  const { privateKey } = await loadOrCreateIdentity();
+  return toHex(privateKey.raw);
+}
+
+/**
  * The genome address is deterministically derived from (publicKey, displayName) -
  * see registerUser() - so a returning user must be re-registered with the exact
  * name they originally chose, or they'd silently get a different genome on every

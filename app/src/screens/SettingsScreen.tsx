@@ -87,12 +87,21 @@ function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean
 
 const SIDEBAR_ITEMS = [
   { id: "profile", label: "Profile", icon: UserIcon },
+  { id: "security", label: "Security", icon: Key },
   { id: "preferences", label: "Preferences", icon: SlidersHorizontal },
   { id: "privacy", label: "Privacy & Safety", icon: CircleX },
   { id: "about", label: "About Helix", icon: CircleHelp },
 ] as const;
 
-export function SettingsScreen({ onBack, onEditProfile }: { onBack: () => void; onEditProfile: () => void }) {
+export function SettingsScreen({
+  onBack,
+  onEditProfile,
+  onBackupKey,
+}: {
+  onBack: () => void;
+  onEditProfile: () => void;
+  onBackupKey: () => void;
+}) {
   // Only a dark theme is implemented in this pass - the toggle is cosmetic/local state,
   // not a real light-mode switch, matching this pass's scope.
   const [darkMode, setDarkMode] = useState(true);
@@ -103,6 +112,7 @@ export function SettingsScreen({ onBack, onEditProfile }: { onBack: () => void; 
 
   const sectionRefs = {
     profile: useRef<HTMLDivElement>(null),
+    security: useRef<HTMLDivElement>(null),
     preferences: useRef<HTMLDivElement>(null),
     privacy: useRef<HTMLDivElement>(null),
     about: useRef<HTMLDivElement>(null),
@@ -141,6 +151,20 @@ export function SettingsScreen({ onBack, onEditProfile }: { onBack: () => void; 
         <Pencil size={16} className="text-ink" />
         <span className="text-sm font-semibold text-ink">Edit Profile</span>
       </button>
+    </div>
+  );
+
+  const securityGroup = (
+    <div ref={sectionRefs.security}>
+      <SettingsGroup label="Security">
+        <SettingsRow
+          icon={Key}
+          label="Backup Private Key"
+          last
+          onClick={onBackupKey}
+          trailing={<ChevronRight size={16} className="text-ink-muted" />}
+        />
+      </SettingsGroup>
     </div>
   );
 
@@ -244,6 +268,7 @@ export function SettingsScreen({ onBack, onEditProfile }: { onBack: () => void; 
             </button>
           </div>
           {profileCard}
+          {securityGroup}
           {preferencesGroup}
           {privacyGroup}
           {aboutGroup}
@@ -316,6 +341,7 @@ export function SettingsScreen({ onBack, onEditProfile }: { onBack: () => void; 
           <div className="flex-1 overflow-y-auto px-10 py-8">
             <div className="mx-auto flex w-full max-w-[1040px] flex-col gap-6">
               {profileCard}
+              {securityGroup}
               {preferencesGroup}
               {privacyGroup}
               {aboutGroup}
