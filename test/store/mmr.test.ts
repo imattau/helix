@@ -1,40 +1,38 @@
 import { describe, expect, it } from 'vitest';
-import { MerkleMountainRange } from '../../src/store/mmr.js';
+import { MerkleMountainRange, type MMRPeak } from '../../src/store/mmr.js';
 
 function leaf(n: number): Uint8Array {
   return new Uint8Array([n, n, n, n]);
 }
 
 describe('MerkleMountainRange', () => {
-  it('folds leaves into peaks with strictly increasing heights [0, 1, 2, ...] at N=1,3,7,15', () => {
-    // Given the fold rule (tailLen === 2 ** peaks.length), each new peak's height always
-    // equals the current peak count at fold time, so peaks come out as [0, 1, 2, ..., k-1]
-    // with every leaf folded (no pending tail) exactly at N = 2^k - 1.
+  it('bags every leaf immediately: peak heights always match the set bits of the leaf count', () => {
+    // Real per-leaf MMR carry-propagation: at any N, peak heights (tallest first) are
+    // exactly N's set bits in binary, e.g. N=7 (0b111) -> [2, 1, 0], N=5 (0b101) -> [2, 0].
     const mmr = new MerkleMountainRange();
-    const boundaries = [1, 3, 7, 15];
-    let n = 0;
-    for (const boundary of boundaries) {
-      while (n < boundary) {
-        mmr.append(leaf(n));
-        n++;
-      }
+    for (let n = 1; n <= 20; n++) {
+      mmr.append(leaf(n - 1));
       const state = mmr.getSyncState();
-      expect(state.totalLeaves).toBe(boundary);
-      expect(state.peaks.map((p) => p.height)).toEqual(Array.from({ length: state.peaks.length }, (_, i) => i));
-      expect(state.peaks.reduce((sum, p) => sum + p.leafCount, 0)).toBe(boundary); // fully folded, no pending tail
+      expect(state.totalLeaves).toBe(n);
+
+      const expectedHeights: number[] = [];
+      for (let bit = 31; bit >= 0; bit--) {
+        if (n & (1 << bit)) expectedHeights.push(bit);
+      }
+      expect(state.peaks.map((p) => p.height)).toEqual(expectedHeights);
+      expect(state.peaks.reduce((sum, p) => sum + p.leafCount, 0)).toBe(n); // every leaf always belongs to some peak
     }
   });
 
-  it('leaves a pending (unfolded) leaf between fold boundaries', () => {
+  it('every appended leaf has a peak-based proof immediately (no pending/unfolded leaves)', () => {
     const mmr = new MerkleMountainRange();
-    mmr.append(leaf(0)); // folds immediately (N=1)
-    mmr.append(leaf(1)); // N=2: tail needs to reach 2^1=2, so this one is still pending
+    mmr.append(leaf(0));
+    mmr.append(leaf(1));
 
     const state = mmr.getSyncState();
     expect(state.totalLeaves).toBe(2);
-    const foldedCount = state.peaks.reduce((sum, p) => sum + p.leafCount, 0);
-    expect(foldedCount).toBe(1); // only the first leaf has a peak yet
-    expect(() => mmr.getProof(1)).toThrow(); // index 1 isn't folded into a peak yet
+    expect(state.peaks.reduce((sum, p) => sum + p.leafCount, 0)).toBe(2);
+    expect(() => mmr.getProof(1)).not.toThrow();
   });
 
   it('round-trips proofs for every folded leaf across many appends', () => {
@@ -59,14 +57,33 @@ describe('MerkleMountainRange', () => {
     expect(MerkleMountainRange.verifyProof(leaf(99), proof, peaks)).toBe(false);
   });
 
-  it('keeps earlier proofs valid after later appends (peaks are append-only, never rewritten)', () => {
+  it('a freshly re-derived proof stays valid after later appends, even once its peak has been absorbed upward', () => {
     const mmr = new MerkleMountainRange();
     for (let i = 0; i < 3; i++) mmr.append(leaf(i));
-    const earlyProof = mmr.getProof(0);
 
-    for (let i = 3; i < 7; i++) mmr.append(leaf(i)); // adds new peaks, doesn't touch existing ones
+    for (let i = 3; i < 7; i++) mmr.append(leaf(i)); // may absorb leaf 0's original peak into a taller one
+    const laterProof = mmr.getProof(0); // re-derived against current state, not cached from before
     const { peaks: laterPeaks } = mmr.getSyncState();
 
-    expect(MerkleMountainRange.verifyProof(leaf(0), earlyProof, laterPeaks)).toBe(true);
+    expect(MerkleMountainRange.verifyProof(leaf(0), laterProof, laterPeaks)).toBe(true);
+  });
+
+  it('fires onFold once per peak+peak combine, with the combined height one more than its children', () => {
+    const folds: { combined: MMRPeak; left: MMRPeak; right: MMRPeak }[] = [];
+    const mmr = new MerkleMountainRange((combined, left, right) => folds.push({ combined, left, right }));
+
+    for (let i = 0; i < 8; i++) mmr.append(leaf(i));
+
+    // N=8 (0b1000) folds down to a single height-3 peak: leaf appends 1..8 trigger
+    // combines at N=2,4(x2),6,8(x3) -> 1+2+3 = ... let's just assert the invariants
+    // instead of a magic count, since the exact count is implied by popcount cascades.
+    expect(folds.length).toBeGreaterThan(0);
+    for (const { combined, left, right } of folds) {
+      expect(left.height).toBe(right.height);
+      expect(combined.height).toBe(left.height + 1);
+      expect(combined.leafCount).toBe(left.leafCount + right.leafCount);
+    }
+    // 8 = 2^3, so everything bags into one peak of height 3.
+    expect(mmr.getSyncState().peaks.map((p) => p.height)).toEqual([3]);
   });
 });

@@ -1,4 +1,5 @@
 import { MerkleMountainRange } from './mmr.js';
+import { PeakGraph } from './peakGraph.js';
 import { FollowGraph } from '../social/followGraph.js';
 import type { Genome, Helix, TAD } from '../types/index.js';
 
@@ -20,6 +21,8 @@ export interface HelixStore {
   getClosedTad(genomeAddress: string, tadIndex: number): TAD | undefined;
   getLatestPostForGenome(genomeAddress: string): Helix | undefined;
   getFollowGraph(): FollowGraph;
+  /** Queryable mirror of MMR peak-folding history - see src/store/peakGraph.ts. */
+  getPeakGraph(): PeakGraph;
   /** True once some other post's `recombinesPostId` points at this one - see createPost.ts. */
   isSuperseded(postId: string): boolean;
   /** Walks the recombination chain forward to the current (non-superseded) version. */
@@ -35,6 +38,7 @@ export class MemoryStore implements HelixStore {
   private closedTadsByGenome = new Map<string, TAD[]>();
   private closedTadIdsSeen = new Set<string>();
   private followGraph = new FollowGraph();
+  private peakGraph = new PeakGraph();
   private supersededBy = new Map<string, string>(); // originalPostId -> newer postId
 
   saveGenome(genome: Genome): void {
@@ -111,7 +115,7 @@ export class MemoryStore implements HelixStore {
   getOrCreateMmr(genomeAddress: string): MerkleMountainRange {
     let mmr = this.mmrsByGenome.get(genomeAddress);
     if (!mmr) {
-      mmr = new MerkleMountainRange();
+      mmr = new MerkleMountainRange((combined, left, right) => this.peakGraph.recordFold(genomeAddress, combined, left, right));
       this.mmrsByGenome.set(genomeAddress, mmr);
     }
     return mmr;
@@ -133,5 +137,9 @@ export class MemoryStore implements HelixStore {
 
   getFollowGraph(): FollowGraph {
     return this.followGraph;
+  }
+
+  getPeakGraph(): PeakGraph {
+    return this.peakGraph;
   }
 }

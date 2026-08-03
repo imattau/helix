@@ -1,6 +1,6 @@
 import { sha256 } from '../crypto/hash.js';
 import { toHex, fromHex } from '../crypto/hex.js';
-import { computeMerkleRoot, computeMerkleProof, verifyMerkleProof, type MerkleProofStep } from './merkle.js';
+import { computeMerkleProof, verifyMerkleProof, type MerkleProofStep } from './merkle.js';
 
 export interface MMRPeak {
   height: number;
@@ -25,45 +25,38 @@ export interface MMRProof {
 }
 
 /**
- * A Merkle Mountain Range: leaves append into an internal tail; once the tail reaches
- * a power-of-2 size (relative to the current peak count) it folds into a new peak, and
- * peaks of equal height bag together the same way DNA loops stack into a fractal
- * globule. The full leaf history is retained (nothing is discarded - see the project
- * plan for why the "XOR zipper" tail-fold from the original proposal doesn't actually
- * save space and isn't implemented), so proofs are always recomputed on demand from the
+ * A Merkle Mountain Range: each appended leaf becomes a new height-0 peak, then peaks
+ * bag together - two adjacent peaks of equal height combine into one peak of height+1 -
+ * the same carry-propagation as incrementing a binary counter, and the same way DNA
+ * loops stack into a fractal globule. At any point the peak heights are exactly the set
+ * bits of the total leaf count, from tallest to shortest. The full leaf history is
+ * retained (nothing is discarded), so proofs are always recomputed on demand from the
  * live leaf array using each peak's (startIndex, leafCount) span rather than a maintained
  * tree of objects - simpler, and always consistent with the current bagged state.
  *
- * NOTE: a leaf that has been appended but not yet folded into a peak (because the
- * internal tail hasn't reached its next power-of-2 threshold) has no peak-based proof
- * yet - getProof() throws for such an index. It's still directly readable from local
- * storage; it just isn't compactly provable to a remote peer until the next fold.
+ * NOTE: because peaks bag upward as more leaves arrive, a peak (and any MMRProof
+ * derived from it) is only guaranteed valid against its *own* getSyncState() snapshot -
+ * a later append can absorb it into a taller peak with a different hash. Callers that
+ * need a proof to stay verifiable should re-derive it (getProof + fresh getSyncState())
+ * rather than caching one indefinitely. This is standard MMR behavior, not a bug.
  */
 export class MerkleMountainRange {
   private leaves: Uint8Array[] = [];
   private peaks: MMRPeak[] = [];
-  private tailStart = 0;
 
-  /** Appends a leaf (e.g. a closed TAD's Merkle root), folding/bagging peaks as needed. Returns the assigned leaf index. */
+  /**
+   * Optional observer fired once per peak+peak combine. Purely additive: the
+   * proof/sync math below never reads from it. See src/store/peakGraph.ts, which
+   * uses this to mirror the fold hierarchy into the PolyPack graph engine.
+   */
+  constructor(private readonly onFold?: (combined: MMRPeak, left: MMRPeak, right: MMRPeak) => void) {}
+
+  /** Appends a leaf (e.g. a closed TAD's Merkle root), bagging peaks as needed. Returns the assigned leaf index. */
   append(leafHash: Uint8Array): number {
     const index = this.leaves.length;
     this.leaves.push(leafHash);
 
-    const tailLen = this.leaves.length - this.tailStart;
-    if (tailLen === 2 ** this.peaks.length) {
-      this.foldTail();
-    }
-    return index;
-  }
-
-  private foldTail(): void {
-    const start = this.tailStart;
-    const count = this.leaves.length - start;
-    const slice = this.leaves.slice(start, start + count);
-    const rootHash = computeMerkleRoot(slice);
-
-    this.peaks.push({ height: Math.log2(count), hashHex: toHex(rootHash), startIndex: start, leafCount: count });
-    this.tailStart = this.leaves.length;
+    this.peaks.push({ height: 0, hashHex: toHex(sha256(leafHash)), startIndex: index, leafCount: 1 });
 
     while (this.peaks.length >= 2 && this.peaks[this.peaks.length - 1].height === this.peaks[this.peaks.length - 2].height) {
       const right = this.peaks.pop()!;
@@ -71,13 +64,16 @@ export class MerkleMountainRange {
       const combined = new Uint8Array(64);
       combined.set(fromHex(left.hashHex), 0);
       combined.set(fromHex(right.hashHex), 32);
-      this.peaks.push({
+      const folded: MMRPeak = {
         height: left.height + 1,
         hashHex: toHex(sha256(combined)),
         startIndex: left.startIndex,
         leafCount: left.leafCount + right.leafCount,
-      });
+      };
+      this.peaks.push(folded);
+      this.onFold?.(folded, left, right);
     }
+    return index;
   }
 
   getSyncState(): MMRSyncState {
