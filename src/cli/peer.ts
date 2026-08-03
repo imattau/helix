@@ -313,7 +313,7 @@ async function main() {
     // bob follows the first peer he observed (alice) once her genesis has arrived
     await waitFor(() => firstPeerGenome !== undefined, 5000).catch(() => {});
     if (firstPeerGenome) {
-      await followUser(node, store, genome.genome, firstPeerGenome);
+      await followUser(node, store, hlcClock, genome.genome, firstPeerGenome);
       console.log(`[${name}] followed genome=${firstPeerGenome}`);
     }
   }

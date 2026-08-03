@@ -9,10 +9,10 @@ import { TOPICS } from "@helix/node/pubsubTopics.js";
 import { decodeGenesis, decodePost, decodeFollow } from "@helix/node/messages.js";
 import { verifyProofOfWork, REGISTRATION_DIFFICULTY_BITS } from "@helix/crypto/pow.js";
 import { fromHex } from "@helix/crypto/hex.js";
-import type { Genome, Helix, HelixKind } from "@helix/types/index.js";
+import type { Genome, Helix, HelixKind, Follow } from "@helix/types/index.js";
 import { loadOrCreateIdentity } from "./identity";
 import { SearchIndex } from "./searchIndex";
-import type { Post, User } from "../types";
+import type { Notification, Post, User } from "../types";
 
 export { SpamRejectedError };
 
@@ -94,6 +94,10 @@ export class HelixClient {
   private hlc!: HybridLogicalClock;
   private selfGenome?: Genome;
   private posts: Helix[] = [];
+  /** Every follow event this peer has observed, self-initiated or gossiped in - see
+   *  getNotifications(). Structural following/followers state itself still lives in
+   *  MemoryStore's FollowGraph; this is purely the timestamped event log for notifications. */
+  private followEvents: Follow[] = [];
   private readonly listeners = new Set<() => void>();
   private connectPromise?: Promise<void>;
   private version = 0;
@@ -175,7 +179,9 @@ export class HelixClient {
     } else if (evt.detail.topic === TOPICS.FOLLOWS) {
       const follow = decodeFollow(evt.detail.data);
       if (!this.store.hasGenome(follow.followerGenome) || !this.store.hasGenome(follow.followeeGenome)) return;
+      this.hlc.update(follow.hlcTimestamp);
       this.store.getFollowGraph().addFollow(follow.followerGenome, follow.followeeGenome);
+      this.followEvents.push(follow);
       this.notify();
     } else if (evt.detail.topic === TOPICS.POSTS) {
       const post = decodePost(evt.detail.data);
@@ -279,7 +285,8 @@ export class HelixClient {
 
   async follow(genome: string): Promise<void> {
     if (!this.selfGenome) throw new Error("HelixClient.follow: not registered yet");
-    await followUser(this.node, this.store, this.selfGenome.genome, genome);
+    const follow = await followUser(this.node, this.store, this.hlc, this.selfGenome.genome, genome);
+    this.followEvents.push(follow);
     this.notify();
   }
 
@@ -366,6 +373,56 @@ export class HelixClient {
   hasBoosted(postId: string): boolean {
     const r = this.findOwnReaction("boost", postId);
     return r !== undefined && decodeReaction(r.content).active;
+  }
+
+  /** Likes/boosts/replies on your posts, plus new followers - newest first. Derived
+   *  entirely from `this.posts`/`this.followEvents` rather than a separate persisted
+   *  log, same as every other view in this client. Excludes your own reactions to your
+   *  own posts and only counts each reaction/reply chain's current (non-superseded)
+   *  version, so toggling a like off and back on doesn't produce two notifications. */
+  getNotifications(): Notification[] {
+    if (!this.selfGenome) return [];
+    const selfGenome = this.selfGenome.genome;
+    const myPostIds = new Set(this.posts.filter((p) => p.kind === "post" && p.genome === selfGenome).map((p) => p.postId));
+
+    type Item = { kind: Notification["kind"]; actorGenome: string; hlcTimestamp: Helix["hlcTimestamp"]; targetPostId?: string };
+    const items: Item[] = [];
+
+    for (const p of this.posts) {
+      if (p.genome === selfGenome || !this.isCurrent(p) || !p.parentPostId || !myPostIds.has(p.parentPostId)) continue;
+      if (p.kind === "like" || p.kind === "boost") {
+        if (decodeReaction(p.content).active) {
+          items.push({ kind: p.kind, actorGenome: p.genome, hlcTimestamp: p.hlcTimestamp, targetPostId: p.parentPostId });
+        }
+      } else if (p.kind === "post") {
+        items.push({ kind: "reply", actorGenome: p.genome, hlcTimestamp: p.hlcTimestamp, targetPostId: p.postId });
+      }
+    }
+
+    for (const f of this.followEvents) {
+      if (f.followeeGenome === selfGenome && f.followerGenome !== selfGenome) {
+        items.push({ kind: "follow", actorGenome: f.followerGenome, hlcTimestamp: f.hlcTimestamp });
+      }
+    }
+
+    items.sort((a, b) => HybridLogicalClock.compare(b.hlcTimestamp, a.hlcTimestamp));
+
+    return items
+      .map((item, index) => {
+        const actor = this.getUser(item.actorGenome);
+        if (!actor) return undefined;
+        const target = item.targetPostId ? this.getPost(item.targetPostId) : undefined;
+        const notification: Notification = {
+          id: `${item.kind}:${item.actorGenome}:${item.targetPostId ?? index}`,
+          kind: item.kind,
+          actor,
+          timeAgo: formatTimeAgo(item.hlcTimestamp.physical),
+          targetPostId: item.targetPostId,
+          targetExcerpt: target?.content,
+        };
+        return notification;
+      })
+      .filter((n): n is Notification => n !== undefined);
   }
 
   /** Full-text search over post content and display names - see src/backend/searchIndex.ts.

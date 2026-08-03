@@ -5,6 +5,7 @@ import { createHelixNode, type HelixNode } from '../../src/node/createNode.js';
 import { MemoryStore } from '../../src/store/memoryStore.js';
 import { registerUser, genomeProofInput } from '../../src/api/registerUser.js';
 import { followUser } from '../../src/api/follow.js';
+import { HybridLogicalClock } from '../../src/clock/hlc.js';
 import { verifyProofOfWork, REGISTRATION_DIFFICULTY_BITS } from '../../src/crypto/pow.js';
 import { decodeGenesis, decodeFollow, encodeFollow } from '../../src/node/messages.js';
 import { TOPICS } from '../../src/node/pubsubTopics.js';
@@ -128,7 +129,7 @@ describe('four-peer follow graph over libp2p', () => {
     );
 
     // bob follows alice; carol follows bob -> carol is alice's follower-of-follower
-    await followUser(bob, bobStore, bobGenome.genome, aliceGenome.genome);
+    await followUser(bob, bobStore, new HybridLogicalClock(bob.peerId.toString()), bobGenome.genome, aliceGenome.genome);
     await waitFor(
       () =>
         aliceStore.getFollowGraph().getFollowers(aliceGenome.genome).length === 1 &&
@@ -136,7 +137,7 @@ describe('four-peer follow graph over libp2p', () => {
         charlieStore.getFollowGraph().getFollowers(aliceGenome.genome).length === 1,
     );
 
-    await followUser(carol, carolStore, carolGenome.genome, bobGenome.genome);
+    await followUser(carol, carolStore, new HybridLogicalClock(carol.peerId.toString()), carolGenome.genome, bobGenome.genome);
     await waitFor(
       () =>
         aliceStore.getFollowGraph().getFollowers(bobGenome.genome).length === 1 &&
@@ -164,7 +165,11 @@ describe('four-peer follow graph over libp2p', () => {
     // a follow message referencing an unregistered genome must be rejected by every receiver
     await alice.services.pubsub.publish(
       TOPICS.FOLLOWS,
-      encodeFollow({ followerGenome: 'TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT', followeeGenome: aliceGenome.genome }),
+      encodeFollow({
+        followerGenome: 'TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT',
+        followeeGenome: aliceGenome.genome,
+        hlcTimestamp: { physical: Date.now(), logical: 0, peerId: 'attacker' },
+      }),
     );
     await waitFor(() => bobRejected.follow > 0 && carolRejected.follow > 0 && charlieRejected.follow > 0);
     expect(bobStore.getFollowGraph().getFollowers(aliceGenome.genome)).toEqual([bobGenome.genome]);

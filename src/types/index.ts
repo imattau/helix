@@ -79,6 +79,7 @@ export interface TAD {
 export interface Follow {
   followerGenome: string;
   followeeGenome: string;
+  hlcTimestamp: HLCTimestamp;
 }
 
 export interface Spacer {
