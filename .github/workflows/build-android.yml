@@ -9,6 +9,13 @@ on:
 jobs:
   build-android:
     runs-on: ubuntu-latest
+    env:
+      # Release-signing secrets, exposed as job env so the signing step's `if:` can
+      # reference them (GitHub forbids secrets directly in `if:`). Unset/empty when
+      # no keystore is configured yet, in which case the build stays debug-signed.
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
     steps:
       - uses: actions/checkout@v4
 
@@ -57,12 +64,19 @@ jobs:
         env:
           NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
 
-      # Unsigned build: Tauri auto-generates a debug keystore for this, which is
-      # fine for CI verification but NOT for a Play Store release. A real release
-      # needs a proper upload keystore stored as a repo secret and referenced here
-      # (see https://tauri.app/distribute/sign/android/) - deliberately out of scope
-      # until there's an actual signing identity for this app.
-      - name: Build Android APK + AAB (debug-signed)
+      # Release signing is opt-in, gated on the ANDROID_KEYSTORE_BASE64 secret (create it
+      # with scripts/create-android-keystore.sh, then `gh secret set` the printed values).
+      # When configured, decode the keystore, write keystore.properties, and patch the
+      # generated build.gradle.kts so release APK/AAB builds are signed with the release
+      # key. When not configured, the build below falls back to Tauri's auto-generated
+      # debug keystore - fine for CI verification, NOT for Play Store release.
+      - name: Set up release signing
+        if: env.ANDROID_KEYSTORE_BASE64 != ''
+        run: |
+          base64 -d <<< "$ANDROID_KEYSTORE_BASE64" > "$RUNNER_TEMP/helix-release.keystore"
+          scripts/setup-android-signing.sh "$RUNNER_TEMP/helix-release.keystore" "$ANDROID_KEYSTORE_PASSWORD" "$ANDROID_KEY_ALIAS"
+
+      - name: Build Android APK + AAB
         working-directory: app
         run: npm run tauri android build -- --apk --aab
         env:

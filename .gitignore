@@ -3,3 +3,11 @@ dist/
 .helix-data/
 *.log
 .DS_Store
+
+# Android release signing - keystores and signing properties are secrets and must
+# never be committed. scripts/create-android-keystore.sh stores the local keystore
+# under scripts/android/.
+scripts/android/
+*.keystore
+*.jks
+keystore.properties
