@@ -40,12 +40,29 @@ export async function registerUser(
   if (!publicKeyBytes) {
     throw new Error('registerUser: node identity has no inlined public key');
   }
+  const publicKeyHex = toHex(publicKeyBytes);
 
+  // A returning user's own genome is deterministically derived from (publicKey,
+  // displayName) and is already in a persisted store - that's a restart, not a
+  // collision, so reuse it instead of deriving a fresh `:1` genome (which would
+  // silently fork the identity on every reload). Only a genome owned by a
+  // DIFFERENT public key counts as a collision worth bumping past.
   let genome = to_base4(derive_subkey(publicKeyBytes, `genome:${displayName}`));
   let attempt = 0;
-  while (store.hasGenome(genome)) {
+  let owned = store.getGenome(genome);
+  while (store.hasGenome(genome) && owned?.publicKeyHex !== publicKeyHex) {
     attempt += 1;
     genome = to_base4(derive_subkey(publicKeyBytes, `genome:${displayName}:${attempt}`));
+    owned = store.getGenome(genome);
+  }
+
+  if (owned) {
+    // Re-registration after a restart: reuse the persisted genome record, make
+    // sure an open TAD exists for future posts, and re-announce the genesis so
+    // the mesh (and any fresh store) learns we're back. Not a fresh registration.
+    const genesisTad = store.getOpenTad(owned.genome) ?? store.createTad(owned.genome);
+    await node.services.pubsub.publish(TOPICS.GENESIS, encodeGenesis({ genome: owned, tadId: genesisTad.tadId }));
+    return { genome: owned, genesisTad };
   }
 
   // Registration has a real cost: find a nonce over (pubkey ++ genome) whose hash meets

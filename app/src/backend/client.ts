@@ -189,19 +189,23 @@ export class HelixClient {
   }
 
   /** Registers under `displayName` once connect() has finished, then creates the
-   *  one-time "profile record" post - see editProfile() for how it's later edited. */
+   *  one-time "profile record" post - see editProfile() for how it's later edited.
+   *  On a restart the genome is reused (registerUser returns the persisted record),
+   *  so the profile post from the previous session is kept rather than re-created. */
   async register(displayName: string): Promise<void> {
     if (this.selfGenome) return;
     await this.connect();
     const { genome } = await registerUser(this.node, this.store, displayName);
     this.selfGenome = genome;
 
-    const profilePost = await createPostApi(this.node, this.store, this.hlc, {
-      authorGenome: genome.genome,
-      kind: "profile",
-      content: encodeProfile({ displayName }),
-    });
-    this.indexForSearch(profilePost);
+    if (!this.getCurrentProfilePost(genome.genome)) {
+      const profilePost = await createPostApi(this.node, this.store, this.hlc, {
+        authorGenome: genome.genome,
+        kind: "profile",
+        content: encodeProfile({ displayName }),
+      });
+      this.indexForSearch(profilePost);
+    }
     this.notify();
   }
 
