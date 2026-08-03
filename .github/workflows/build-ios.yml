@@ -23,6 +23,13 @@ jobs:
         with:
           targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
 
+      # app/'s frontend imports the backend directly from ../src (see app/vite.config.ts's
+      # @helix alias) rather than as a published package, so packages like libp2p,
+      # @noble/hashes, and @0xx0lostcause0xx0/polypack resolve from the REPO ROOT's
+      # node_modules, not app/'s. Both installs are required.
+      - name: Install root (backend) dependencies
+        run: npm ci
+
       - name: Install frontend dependencies
         working-directory: app
         run: npm ci
