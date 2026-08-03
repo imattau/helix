@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useRef, useState, useSyncExternal
 import { HelixClient } from "./client";
 import { getStoredDisplayName, saveDisplayName } from "./identity";
 import { OnboardingScreen } from "../screens/OnboardingScreen";
+import { LoadingScreen } from "../screens/LoadingScreen";
 
 const HelixContext = createContext<HelixClient | null>(null);
 
@@ -50,11 +51,7 @@ export function HelixProvider({ children }: { children: ReactNode }) {
   }
 
   if (phase === "loading") {
-    return (
-      <div className="flex h-full w-full items-center justify-center bg-bg text-sm text-ink-muted">
-        Connecting to Helix…
-      </div>
-    );
+    return <LoadingScreen />;
   }
 
   if (phase === "error") {

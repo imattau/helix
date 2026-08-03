@@ -23,7 +23,7 @@
 
   --font-sans: "Manrope", ui-sans-serif, system-ui, sans-serif;
   --font-display: "Unbounded", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --font-mono: "Geist Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
   /* Dedicated to the HELIX wordmark only - the brand identity system page
    * (node 14:2) specifies Outfit ExtraBold specifically for the logo lockup,
    * distinct from --font-display (Unbounded) used for in-app headings. */
@@ -67,4 +67,20 @@ body {
 *::-webkit-scrollbar-thumb:hover {
   background-color: var(--color-border);
   background-clip: content-box;
+}
+
+/* Indeterminate sweep for LoadingScreen's init bar - there's no real progress
+ * signal from connect()/register() to drive an actual fill, so this just
+ * communicates "working" rather than a fake completion percentage. */
+@keyframes helix-loading-sweep {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(400%);
+  }
+}
+
+.animate-helix-loading-sweep {
+  animation: helix-loading-sweep 1.4s ease-in-out infinite;
 }
