@@ -10,6 +10,7 @@ import { computeMerkleRoot } from '../store/merkle.js';
 import { HybridLogicalClock } from '../clock/hlc.js';
 import { registerUser, genomeProofInput } from '../api/registerUser.js';
 import { createPost, SpamRejectedError, TAD_SIZE } from '../api/createPost.js';
+import { ingestPost, PostRejectedError } from '../api/ingestPost.js';
 import { followUser } from '../api/follow.js';
 import { getSyncState } from '../api/query.js';
 import { fetchAndVerifyAttachment, fetchAndVerifyAttachmentFromIpfs, publishAttachmentToIpfs, toDataUrl } from '../api/attachment.js';
@@ -126,6 +127,15 @@ async function main() {
         .catch((err) => console.error(`[${name}] [IPFS] failed to dial peer's IPFS node: ${err.message}`));
     } else if (evt.detail.topic === TOPICS.POSTS) {
       const post = decodePost(evt.detail.data);
+      try {
+        ingestPost(store, post);
+      } catch (err) {
+        if (err instanceof PostRejectedError) {
+          console.log(`[${name}] [POST-REJECTED] id=${post.postId} ${err.message}`);
+          return;
+        }
+        throw err;
+      }
       const recomputedEntropy = calculate_entropy(post.content);
       const checksumOk = verifyGf4Checksum(post.contentHashBase4, post.gf4Checksum);
       hlcClock.update(post.hlcTimestamp);

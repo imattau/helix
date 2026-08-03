@@ -5,6 +5,7 @@ import { MemoryStore } from "@helix/store/memoryStore.js";
 import { HybridLogicalClock } from "@helix/clock/hlc.js";
 import { registerUser, genomeProofInput } from "@helix/api/registerUser.js";
 import { createPost as createPostApi, SpamRejectedError } from "@helix/api/createPost.js";
+import { ingestPost, PostRejectedError } from "@helix/api/ingestPost.js";
 import { followUser } from "@helix/api/follow.js";
 import { TOPICS } from "@helix/node/pubsubTopics.js";
 import { decodeGenesis, decodePost, decodeFollow } from "@helix/node/messages.js";
@@ -200,6 +201,15 @@ export class HelixClient {
       this.notify();
     } else if (evt.detail.topic === TOPICS.POSTS) {
       const post = decodePost(evt.detail.data);
+      try {
+        ingestPost(this.store, post);
+      } catch (err) {
+        if (err instanceof PostRejectedError) {
+          console.warn(`[helix] rejected post ${post.postId}: ${err.message}`);
+          return;
+        }
+        throw err;
+      }
       this.hlc.update(post.hlcTimestamp);
       this.posts.unshift(post);
       this.indexForSearch(post);
