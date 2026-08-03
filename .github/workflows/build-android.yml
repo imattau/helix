@@ -1,0 +1,70 @@
+name: Build Android
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Install Rust with Android targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Android NDK
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27
+          link-to-sdk: true
+
+      - name: Install frontend dependencies
+        working-directory: app
+        run: npm ci
+
+      # `gen/android` is gitignored (regenerated every run - see src-tauri/.gitignore)
+      # so it has to be created before `android build` can use it. `--ci` skips the
+      # interactive prompts `init` normally shows on first run.
+      - name: Initialize Android project
+        working-directory: app
+        run: npm run tauri android init -- --ci
+        env:
+          NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+
+      # Unsigned build: Tauri auto-generates a debug keystore for this, which is
+      # fine for CI verification but NOT for a Play Store release. A real release
+      # needs a proper upload keystore stored as a repo secret and referenced here
+      # (see https://tauri.app/distribute/sign/android/) - deliberately out of scope
+      # until there's an actual signing identity for this app.
+      - name: Build Android APK + AAB (debug-signed)
+        working-directory: app
+        run: npm run tauri android build -- --apk --aab
+        env:
+          NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: helix-android
+          path: |
+            app/src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+            app/src-tauri/gen/android/app/build/outputs/bundle/**/*.aab
+          if-no-files-found: error

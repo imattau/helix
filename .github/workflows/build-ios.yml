@@ -1,0 +1,50 @@
+name: Build iOS
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-ios:
+    # iOS builds require Xcode, which only runs on macOS - this can't be done on
+    # Linux/Windows runners or in the local dev sandbox this project was built in.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Install Rust with iOS targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+
+      - name: Install frontend dependencies
+        working-directory: app
+        run: npm ci
+
+      # `gen/apple` is gitignored (regenerated every run - see src-tauri/.gitignore).
+      - name: Initialize iOS project
+        working-directory: app
+        run: npm run tauri ios init -- --ci
+
+      # Simulator-only, unsigned build: a real device or App Store build needs an
+      # Apple Developer Program signing certificate + provisioning profile, which
+      # this project doesn't have configured (no Apple Developer account exists for
+      # it yet). This step only proves the Rust/webview code actually compiles and
+      # links for iOS - see https://tauri.app/distribute/sign/ios/ for what a real
+      # signed build additionally needs (repo secrets for the .p12 cert and
+      # .mobileprovision profile, an `xcrun` codesign step, etc.).
+      - name: Build iOS (simulator, unsigned)
+        working-directory: app
+        run: npm run tauri ios build -- --target aarch64-apple-ios-sim
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: helix-ios-simulator
+          path: app/src-tauri/gen/apple/build/**
+          if-no-files-found: error
