@@ -1,11 +1,23 @@
-import { useState } from "react";
-import { ShieldAlert, GalleryThumbnails, Link2, Hash, MapPin } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { ShieldAlert, GalleryThumbnails, Link2, Hash, MapPin, X } from "lucide-react";
 import { ScreenFrame } from "../components/ScreenFrame";
 import { Avatar } from "../components/Avatar";
 import { useHelixState } from "../backend/HelixProvider";
 import type { Post } from "../types";
 
 const MAX_LENGTH = 280;
+
+/** A media/long-form attachment picked by the user before publishing. */
+export interface ComposeAttachment {
+  bytes: Uint8Array;
+  mimeType: string;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 function CountRing({ count, max }: { count: number; max: number }) {
   const radius = 7;
@@ -36,13 +48,49 @@ export function ComposeScreen({
   replyToPost,
 }: {
   onCancel: () => void;
-  onPublish: (content: string) => void;
+  onPublish: (content: string, attachment?: ComposeAttachment) => void;
   editingPost?: Post;
   replyToPost?: Post;
 }) {
   const client = useHelixState();
   const currentUser = client.getSelfUser();
   const [content, setContent] = useState(editingPost?.content ?? "");
+  const [attachment, setAttachment] = useState<ComposeAttachment>();
+  const [loadingOriginal, setLoadingOriginal] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Editing carries the original attachment forward (the new version re-hashes the same
+  // bytes) - verify-fetch the original so its bytes are available to republish.
+  useEffect(() => {
+    const original = editingPost?.attachment;
+    if (!original) return;
+    let cancelled = false;
+    setLoadingOriginal(true);
+    client
+      .fetchAttachmentBytes(original)
+      .then(
+        (bytes) => {
+          if (!cancelled) setAttachment({ bytes, mimeType: original.mimeType });
+        },
+        (err) => console.warn("[helix] could not load original attachment for edit - will republish without media", err),
+      )
+      .finally(() => {
+        if (!cancelled) setLoadingOriginal(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [client, editingPost?.attachment?.hashHex]);
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    file.arrayBuffer().then(
+      (buf) => setAttachment({ bytes: new Uint8Array(buf), mimeType: file.type || "application/octet-stream" }),
+      (err) => console.warn("[helix] failed to read attachment file", err),
+    );
+  };
 
   return (
     <ScreenFrame>
@@ -53,8 +101,8 @@ export function ComposeScreen({
           </button>
           <button
             type="button"
-            onClick={() => content.trim() && onPublish(content)}
-            disabled={!content.trim() || content.length > MAX_LENGTH}
+            onClick={() => content.trim() && onPublish(content, attachment)}
+            disabled={!content.trim() || content.length > MAX_LENGTH || loadingOriginal}
             className="rounded-[20px] bg-accent px-[18px] py-2 text-[13px] font-bold text-white disabled:opacity-40"
           >
             {editingPost ? "Save Edit" : replyToPost ? "Reply" : "Publish"}
@@ -107,13 +155,33 @@ export function ComposeScreen({
             className="w-full resize-none bg-transparent text-base leading-relaxed text-ink placeholder:text-ink-muted focus:outline-none"
             autoFocus
           />
+
+          {attachment && (
+            <div className="flex items-center gap-2 rounded-xl border border-border bg-surface-alt px-3 py-2">
+              <GalleryThumbnails size={14} className="shrink-0 text-ink-muted" />
+              <span className="flex-1 truncate text-xs text-ink-muted">
+                {attachment.mimeType} • {formatBytes(attachment.bytes.length)}
+              </span>
+              <button type="button" onClick={() => setAttachment(undefined)} aria-label="Remove attachment">
+                <X size={14} className="text-ink-muted" />
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
       <div className="w-full border border-border">
         <div className="flex w-full items-center justify-between bg-surface px-5 py-3">
           <div className="flex items-center gap-4">
-            <GalleryThumbnails size={20} className="text-ink-muted" />
+            <input ref={fileInputRef} type="file" className="hidden" onChange={handleFileChange} />
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              aria-label="Attach media"
+              className="text-ink-muted"
+            >
+              <GalleryThumbnails size={20} />
+            </button>
             <Link2 size={20} className="text-ink-muted" />
             <Hash size={20} className="text-ink-muted" />
             <MapPin size={20} className="text-ink-muted" />

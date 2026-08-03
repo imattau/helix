@@ -4,6 +4,7 @@ import { ScreenFrame } from "../components/ScreenFrame";
 import { Avatar } from "../components/Avatar";
 import { SealedBadge } from "../components/SealedBadge";
 import { PostCard } from "../components/PostCard";
+import { AttachmentMedia } from "../components/AttachmentMedia";
 import { useHelixState } from "../backend/HelixProvider";
 import type { Post } from "../types";
 
@@ -57,6 +58,8 @@ export function PostDetailScreen({
           </button>
 
           <p className="text-base leading-relaxed text-ink">{post.content}</p>
+
+          {post.attachment && <AttachmentMedia attachment={post.attachment} defaultOpen />}
 
           <div className="flex w-full items-center justify-between">
             <span className="text-[13px] text-ink-muted">

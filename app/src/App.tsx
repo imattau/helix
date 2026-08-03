@@ -2,7 +2,7 @@ import { useState, type ReactNode } from "react";
 import { HomeFeedScreen } from "./screens/HomeFeedScreen";
 import { PostDetailScreen } from "./screens/PostDetailScreen";
 import { UserProfileScreen } from "./screens/UserProfileScreen";
-import { ComposeScreen } from "./screens/ComposeScreen";
+import { ComposeScreen, type ComposeAttachment } from "./screens/ComposeScreen";
 import { SettingsScreen } from "./screens/SettingsScreen";
 import { EditProfileScreen } from "./screens/EditProfileScreen";
 import { SearchScreen } from "./screens/SearchScreen";
@@ -41,11 +41,16 @@ function App() {
     }
   };
 
-  const handlePublish = async (content: string, editingPostId?: string, replyToPostId?: string) => {
+  const handlePublish = async (
+    content: string,
+    editingPostId?: string,
+    replyToPostId?: string,
+    attachment?: ComposeAttachment,
+  ) => {
     if (editingPostId) {
-      await client.recombine(editingPostId, content);
+      await client.recombine(editingPostId, content, attachment);
     } else {
-      await client.publish(content, replyToPostId);
+      await client.publish(content, replyToPostId, attachment);
     }
     if (replyToPostId) {
       setStack((s) => s.slice(0, -1)); // back to the thread being replied to, not home
@@ -106,7 +111,7 @@ function App() {
       screen = (
         <ComposeScreen
           onCancel={pop}
-          onPublish={(content) => handlePublish(content, editingPost?.id, replyToPost?.id)}
+          onPublish={(content, attachment) => handlePublish(content, editingPost?.id, replyToPost?.id, attachment)}
           editingPost={editingPost}
           replyToPost={replyToPost}
         />

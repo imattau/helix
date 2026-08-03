@@ -23,6 +23,18 @@ export interface Post {
   likeCount: number;
   /** True when this post is a recombination (edit) of an earlier post - see HelixClient.recombine. */
   wasEdited?: boolean;
+  /** Content-addressed media/long-form reference - see HelixClient.fetchAttachmentBytes.
+   *  Only metadata travels on the wire; bytes are fetched and verified independently. */
+  attachment?: PostAttachment;
+}
+
+/** App-layer mirror of the protocol's Attachment (src/types/index.ts). */
+export interface PostAttachment {
+  hashHex: string;
+  mimeType: string;
+  sizeBytes: number;
+  sourceUrl: string;
+  ipfsCid?: string;
 }
 
 export interface Notification {

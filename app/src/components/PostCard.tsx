@@ -1,6 +1,7 @@
 import { MessageCircleReply, RefreshCw, Heart, Send, BadgeCheck } from "lucide-react";
 import { Avatar } from "./Avatar";
 import { SealedBadge } from "./SealedBadge";
+import { AttachmentMedia } from "./AttachmentMedia";
 import { useHelixState } from "../backend/HelixProvider";
 import type { Post } from "../types";
 
@@ -67,6 +68,8 @@ export function PostCard({
       <button type="button" className="w-full text-left" onClick={() => onOpen?.(post.id)}>
         <p className="text-sm leading-relaxed text-ink">{post.content}</p>
       </button>
+
+      {post.attachment && <AttachmentMedia attachment={post.attachment} />}
 
       <div className="h-px w-full bg-border" />
 

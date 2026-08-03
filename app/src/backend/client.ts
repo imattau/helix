@@ -1,5 +1,7 @@
 import { multiaddr } from "@multiformats/multiaddr";
+import { multiaddr as multiaddrV13 } from "@multiformats/multiaddr-v13";
 import { createHelixNode, type HelixNode } from "@helix/node/createNode.js";
+import { createIpfsNode, type IpfsNode } from "@helix/ipfs/node.js";
 import { connectPublicDiscovery } from "@helix/node/rendezvous.js";
 import { MemoryStore } from "@helix/store/memoryStore.js";
 import { HybridLogicalClock } from "@helix/clock/hlc.js";
@@ -7,15 +9,21 @@ import { registerUser, genomeProofInput } from "@helix/api/registerUser.js";
 import { createPost as createPostApi, SpamRejectedError } from "@helix/api/createPost.js";
 import { ingestPost, PostRejectedError } from "@helix/api/ingestPost.js";
 import { followUser } from "@helix/api/follow.js";
+import {
+  fetchAndVerifyAttachment,
+  fetchAndVerifyAttachmentFromIpfs,
+  publishAttachmentToIpfs,
+  toDataUrl,
+} from "@helix/api/attachment.js";
 import { TOPICS } from "@helix/node/pubsubTopics.js";
-import { decodeGenesis, decodePost, decodeFollow } from "@helix/node/messages.js";
+import { decodeGenesis, decodePost, decodeFollow, decodeIpfsAddr } from "@helix/node/messages.js";
 import { verifyProofOfWork, REGISTRATION_DIFFICULTY_BITS } from "@helix/crypto/pow.js";
 import { fromHex } from "@helix/crypto/hex.js";
-import type { Genome, Helix, Follow } from "@helix/types/index.js";
+import type { Attachment, Genome, Helix, Follow } from "@helix/types/index.js";
 import { loadOrCreateIdentity, isPublicDiscoveryEnabled } from "./identity";
 import { createBrowserPolyPackAdapters } from "./polypackPersistence";
 import { SearchIndex } from "./searchIndex";
-import type { Notification, Post, User } from "../types";
+import type { Notification, Post, PostAttachment, User } from "../types";
 
 export { SpamRejectedError };
 
@@ -103,6 +111,12 @@ export class HelixClient {
   private readonly listeners = new Set<() => void>();
   private connectPromise?: Promise<void>;
   private version = 0;
+  /** Lazily-created real Helia node for attachment bytes - see getIpfsNode(). */
+  private ipfsNodePromise?: Promise<IpfsNode>;
+  /** IPFS peer IDs we've successfully dialed via the IPFS_ADDR gossipsub signal. */
+  private dialedIpfsPeers = new Set<string>();
+  /** Verified attachment bytes by hashHex, so the feed and thread views never refetch. */
+  private attachmentCache = new Map<string, Uint8Array>();
 
   /** Bumped on every state change - lets useSyncExternalStore detect updates. */
   getVersion(): number {
@@ -150,6 +164,7 @@ export class HelixClient {
     this.node.services.pubsub.subscribe(TOPICS.GENESIS);
     this.node.services.pubsub.subscribe(TOPICS.POSTS);
     this.node.services.pubsub.subscribe(TOPICS.FOLLOWS);
+    this.node.services.pubsub.subscribe(TOPICS.IPFS_ADDR);
     this.node.services.pubsub.addEventListener("message", (evt) => this.handleMessage(evt));
 
     const bootstrap = import.meta.env.VITE_BOOTSTRAP_MULTIADDR ?? DEFAULT_BOOTSTRAP;
@@ -220,7 +235,37 @@ export class HelixClient {
       this.hlc.update(post.hlcTimestamp);
       this.indexForSearch(post);
       this.notify();
+    } else if (evt.detail.topic === TOPICS.IPFS_ADDR) {
+      this.dialIpfsPeer(decodeIpfsAddr(evt.detail.data));
     }
+  }
+
+  /** Mirrors the CLI's IPFS rendezvous (src/cli/peer.ts): a peer announces its separate
+   *  Helia node's multiaddrs over gossipsub so we can dial it directly for bitswap.
+   *  A browser can only dial out (no raw TCP), so we filter to the WebSocket addresses
+   *  the webview can actually reach and skip anything already dialed. Best-effort:
+   *  attachment URL fetching never depends on this succeeding. */
+  private dialIpfsPeer(msg: { peerId: string; multiaddrs: string[] }): void {
+    if (this.dialedIpfsPeers.has(msg.peerId)) return;
+    const dialable = msg.multiaddrs.find((addr) => addr.includes("/ws") || addr.includes("/wss"));
+    if (!dialable) return;
+    this.dialedIpfsPeers.add(msg.peerId);
+    this.getIpfsNode()
+      .then((ipfs) => ipfs.libp2p.dial(multiaddrV13(dialable)))
+      .then(() => console.log(`[helix] [IPFS] dialed peer's IPFS node at ${dialable}`))
+      .catch((err) => {
+        this.dialedIpfsPeers.delete(msg.peerId);
+        console.warn(`[helix] [IPFS] failed to dial peer's IPFS node: ${err instanceof Error ? err.message : err}`);
+      });
+  }
+
+  /** Lazily creates the single browser Helia node, reusing the protocol's lean
+   *  createIpfsNode() (no bootstrap discovery, just identify - see src/ipfs/node.ts).
+   *  A browser node can dial out (ws/wss/webrtc) but never accept inbound connections,
+   *  so it's purely a fetch/host client, never a rendezvous point. */
+  getIpfsNode(): Promise<IpfsNode> {
+    if (!this.ipfsNodePromise) this.ipfsNodePromise = createIpfsNode();
+    return this.ipfsNodePromise;
   }
 
   /** True for a post's current (non-superseded) version - see the recombination handling. */
@@ -303,16 +348,93 @@ export class HelixClient {
     return this.store.getFollowGraph().getFollowing(this.selfGenome.genome).includes(genome);
   }
 
-  async publish(content: string, parentPostId?: string): Promise<Post> {
+  /** Attachment to attach to a new post. `ipfsCid` is opt-in: if the caller already
+   *  published to their own IPFS node (see getIpfsNode), it travels with the post and
+   *  lets bitswap peers fetch the bytes; the data: URL is always the reliable path. */
+  async publish(
+    content: string,
+    parentPostId?: string,
+    attachment?: { bytes: Uint8Array; mimeType: string; ipfsCid?: string },
+  ): Promise<Post> {
     if (!this.selfGenome) throw new Error("HelixClient.publish: not registered yet");
     const post = await createPostApi(this.node, this.store, this.hlc, {
       authorGenome: this.selfGenome.genome,
       content,
       parentPostId,
+      attachment: await this.buildAttachment(attachment),
     });
     this.indexForSearch(post);
     this.notify();
     return this.toPost(post);
+  }
+
+  /** Fills in `ipfsCid` by publishing bytes to our own Helia node when the caller
+   *  didn't already - best-effort (a browser node can't be dialed, but peers that
+   *  dial *us* over WebRTC can still bitswap it), never blocks publishing on IPFS
+   *  being reachable. */
+  private async buildAttachment(
+    attachment?: { bytes: Uint8Array; mimeType: string; ipfsCid?: string },
+  ): Promise<{ bytes: Uint8Array; mimeType: string; sourceUrl: string; ipfsCid?: string } | undefined> {
+    if (!attachment) return undefined;
+    const base = {
+      bytes: attachment.bytes,
+      mimeType: attachment.mimeType,
+      sourceUrl: toDataUrl(attachment.bytes, attachment.mimeType),
+      ipfsCid: attachment.ipfsCid,
+    };
+    if (attachment.ipfsCid) return base;
+    try {
+      const ipfs = await this.getIpfsNode();
+      return { ...base, ipfsCid: await publishAttachmentToIpfs(ipfs, attachment.bytes) };
+    } catch (err) {
+      console.warn("[helix] [IPFS] failed to publish attachment to local IPFS node - data: URL only", err);
+      return base;
+    }
+  }
+
+  /** Fetches and verifies an attachment's bytes (URL transport first, real IPFS as a
+   *  fallback when an ipfsCid exists and a peer was dialed), caching verified bytes by
+   *  hashHex so the feed and thread views never refetch. Throws on verification failure
+   *  or an unreachable source - callers render the error state. */
+  async fetchAttachmentBytes(attachment: PostAttachment): Promise<Uint8Array> {
+    const cached = this.attachmentCache.get(attachment.hashHex);
+    if (cached) return cached;
+
+    const protocolAttachment: Attachment = {
+      hashHex: attachment.hashHex,
+      mimeType: attachment.mimeType,
+      sizeBytes: attachment.sizeBytes,
+      sourceUrl: attachment.sourceUrl,
+      ipfsCid: attachment.ipfsCid,
+    };
+
+    let bytes: Uint8Array;
+    try {
+      bytes = await fetchAndVerifyAttachment(protocolAttachment);
+    } catch (urlErr) {
+      if (attachment.ipfsCid && this.dialedIpfsPeers.size > 0) {
+        try {
+          const ipfs = await this.getIpfsNode();
+          bytes = await fetchAndVerifyAttachmentFromIpfs(ipfs, protocolAttachment);
+        } catch (ipfsErr) {
+          console.warn(
+            `[helix] [ATTACHMENT] URL fetch failed (${urlErr}) and IPFS fallback also failed (${ipfsErr})`,
+          );
+          throw urlErr;
+        }
+      } else {
+        throw urlErr;
+      }
+    }
+
+    this.attachmentCache.set(attachment.hashHex, bytes);
+    return bytes;
+  }
+
+  /** Verifies and returns an attachment's bytes as a display-ready data: URL. */
+  async fetchAttachmentDataUrl(attachment: PostAttachment): Promise<string> {
+    const bytes = await this.fetchAttachmentBytes(attachment);
+    return toDataUrl(bytes, attachment.mimeType);
   }
 
   async follow(genome: string): Promise<void> {
@@ -324,12 +446,17 @@ export class HelixClient {
 
   /** "Edit" a post: publishes a new version that supersedes it. The original stays in
    *  the append-only log, unchanged and still provable - see src/api/createPost.ts. */
-  async recombine(targetPostId: string, content: string): Promise<Post> {
+  async recombine(
+    targetPostId: string,
+    content: string,
+    attachment?: { bytes: Uint8Array; mimeType: string; ipfsCid?: string },
+  ): Promise<Post> {
     if (!this.selfGenome) throw new Error("HelixClient.recombine: not registered yet");
     const post = await createPostApi(this.node, this.store, this.hlc, {
       authorGenome: this.selfGenome.genome,
       content,
       recombinesPostId: targetPostId,
+      attachment: await this.buildAttachment(attachment),
     });
     this.indexForSearch(post);
     this.notify();
@@ -498,6 +625,7 @@ export class HelixClient {
       boostCount: this.countActiveReactions("boost", post.postId),
       likeCount: this.countActiveReactions("like", post.postId),
       wasEdited: post.recombinesPostId !== undefined,
+      attachment: post.attachment,
     };
   }
 }

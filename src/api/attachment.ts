@@ -7,9 +7,33 @@ import type { Attachment } from '../types/index.js';
 
 export class AttachmentVerificationError extends Error {}
 
+/** Base64-encodes bytes without Node's Buffer - the shared attachment code also runs
+ *  inside the Tauri webview, where `Buffer` doesn't exist. Chunked so a multi-MB
+ *  attachment never hits the argument-length limit of a single String.fromCharCode. */
+function bytesToBase64(bytes: Uint8Array): string {
+  const CHUNK_SIZE = 0x8000;
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += CHUNK_SIZE) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK_SIZE));
+  }
+  return btoa(binary);
+}
+
+/** Concatenates Uint8Array chunks without Node's Buffer - see bytesToBase64's comment. */
+function concatBytes(chunks: Uint8Array[]): Uint8Array {
+  const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return out;
+}
+
 /** Convenience for building a self-contained (no external host needed) attachment source. */
 export function toDataUrl(bytes: Uint8Array, mimeType: string): string {
-  return `data:${mimeType};base64,${Buffer.from(bytes).toString('base64')}`;
+  return `data:${mimeType};base64,${bytesToBase64(bytes)}`;
 }
 
 /**
@@ -77,7 +101,7 @@ export async function fetchAndVerifyAttachmentFromIpfs(helia: Helia, attachment:
   for await (const chunk of unixfs(helia).cat(cid)) {
     chunks.push(chunk);
   }
-  const bytes = new Uint8Array(Buffer.concat(chunks));
+  const bytes = concatBytes(chunks);
 
   verifyAttachmentBytes(bytes, attachment);
   return bytes;
