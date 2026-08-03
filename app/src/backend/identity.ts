@@ -4,6 +4,7 @@ import type { Ed25519PrivateKey, PeerId } from "@libp2p/interface";
 import { toHex, fromHex } from "@helix/crypto/hex.js";
 
 const STORAGE_KEY = "helix.identity.privateKeyHex";
+const DISPLAY_NAME_KEY = "helix.identity.displayName";
 
 export interface HelixIdentity {
   privateKey: Ed25519PrivateKey;
@@ -28,4 +29,18 @@ export async function loadOrCreateIdentity(): Promise<HelixIdentity> {
 
   const peerId = peerIdFromPrivateKey(privateKey);
   return { privateKey, peerId, publicKeyBytes: privateKey.publicKey.raw };
+}
+
+/**
+ * The genome address is deterministically derived from (publicKey, displayName) -
+ * see registerUser() - so a returning user must be re-registered with the exact
+ * name they originally chose, or they'd silently get a different genome on every
+ * reload. Whether this is set is also literally what "has onboarded" means.
+ */
+export function getStoredDisplayName(): string | null {
+  return localStorage.getItem(DISPLAY_NAME_KEY);
+}
+
+export function saveDisplayName(name: string): void {
+  localStorage.setItem(DISPLAY_NAME_KEY, name);
 }

@@ -4,6 +4,7 @@ import { PostDetailScreen } from "./screens/PostDetailScreen";
 import { UserProfileScreen } from "./screens/UserProfileScreen";
 import { ComposeScreen } from "./screens/ComposeScreen";
 import { SettingsScreen } from "./screens/SettingsScreen";
+import { EditProfileScreen } from "./screens/EditProfileScreen";
 import { useHelixState } from "./backend/HelixProvider";
 import { NavRail } from "./components/NavRail";
 import { FeedListPane } from "./components/FeedListPane";
@@ -14,7 +15,8 @@ type Route =
   | { screen: "detail"; postId: string }
   | { screen: "profile"; userId: string }
   | { screen: "compose"; editingPostId?: string; replyToPostId?: string }
-  | { screen: "settings" };
+  | { screen: "settings" }
+  | { screen: "editProfile" };
 
 function App() {
   const client = useHelixState();
@@ -104,13 +106,17 @@ function App() {
       break;
     }
     case "settings":
-      screen = <SettingsScreen onBack={pop} />;
+      screen = <SettingsScreen onBack={pop} onEditProfile={() => push({ screen: "editProfile" })} />;
+      break;
+    case "editProfile":
+      screen = <EditProfileScreen onCancel={pop} onSaved={pop} />;
       break;
   }
 
   const showFeedPane = current.screen === "detail" || current.screen === "profile" || current.screen === "compose";
-  // helix-desktop-settings has its own topbar + sidebar, no nav-rail (see SettingsScreen.tsx).
-  const showNavRail = current.screen !== "settings";
+  // helix-desktop-settings has its own topbar + sidebar, no nav-rail (see SettingsScreen.tsx) -
+  // editProfile is reached from (and returns to) that same settings flow.
+  const showNavRail = current.screen !== "settings" && current.screen !== "editProfile";
   const activeTab: NavTab =
     current.screen === "profile" && current.userId === client.selfGenomeAddress ? "profile" : "home";
 

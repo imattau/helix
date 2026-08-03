@@ -88,8 +88,20 @@ export function PostDetailScreen({
             <button type="button" onClick={() => onReply(post.id)} aria-label="Reply" className="hidden lg:inline-flex">
               <MessageCircleReply size={22} className="text-ink-muted" />
             </button>
-            <RefreshCw size={22} className="text-ink-muted" />
-            <Heart size={22} className="text-ink-muted" />
+            <button
+              type="button"
+              onClick={() => (client.hasBoosted(post.id) ? client.unboost(post.id) : client.boost(post.id))}
+              aria-label="Boost"
+            >
+              <RefreshCw size={22} className={client.hasBoosted(post.id) ? "text-accent" : "text-ink-muted"} />
+            </button>
+            <button
+              type="button"
+              onClick={() => (client.hasLiked(post.id) ? client.unlike(post.id) : client.like(post.id))}
+              aria-label="Like"
+            >
+              <Heart size={22} className={client.hasLiked(post.id) ? "fill-accent text-accent" : "text-ink-muted"} />
+            </button>
             <Send size={22} className="text-ink-muted" />
             {isOwnPost && (
               <button type="button" onClick={() => onEdit(post.id)} aria-label="Edit post">

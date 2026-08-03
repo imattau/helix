@@ -35,10 +35,20 @@ export interface Attachment {
   ipfsCid?: string;
 }
 
+/**
+ * 'post' covers both top-level posts and replies (already distinguished via
+ * parentPostId). 'like'/'boost'/'profile' reuse the same append-only/recombinable
+ * post primitive instead of inventing separate wire types - see createPost.ts.
+ */
+export type HelixKind = 'post' | 'like' | 'boost' | 'profile';
+
 export interface Helix {
   postId: string;
   genome: string;
   content: string;
+  kind: HelixKind;
+  /** Reply target (kind 'post') or like/boost target (kind 'like'/'boost') - the
+   *  same field doubles as a generic "this relates to that post" reference. */
   parentPostId?: string;
   twist: Twist;
   writhe: Writhe;

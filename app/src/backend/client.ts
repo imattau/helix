@@ -9,7 +9,7 @@ import { TOPICS } from "@helix/node/pubsubTopics.js";
 import { decodeGenesis, decodePost, decodeFollow } from "@helix/node/messages.js";
 import { verifyProofOfWork, REGISTRATION_DIFFICULTY_BITS } from "@helix/crypto/pow.js";
 import { fromHex } from "@helix/crypto/hex.js";
-import type { Genome, Helix } from "@helix/types/index.js";
+import type { Genome, Helix, HelixKind } from "@helix/types/index.js";
 import { loadOrCreateIdentity } from "./identity";
 import type { Post, User } from "../types";
 
@@ -39,6 +39,49 @@ function formatTimeAgo(physicalMs: number): string {
 }
 
 /**
+ * Application-layer conventions for what goes inside a 'profile'/'like'/'boost'
+ * post's otherwise-opaque `content` string - not a protocol change (see
+ * src/types/index.ts's HelixKind doc comment). Other peers that don't know this
+ * convention just see an opaque string, same as they don't render anything today.
+ */
+interface ProfileContent {
+  displayName: string;
+}
+
+function encodeProfile(p: ProfileContent): string {
+  return JSON.stringify(p);
+}
+
+function decodeProfile(content: string): ProfileContent | undefined {
+  try {
+    const parsed = JSON.parse(content);
+    return typeof parsed?.displayName === "string" ? { displayName: parsed.displayName } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** A like/boost is "on" or "off" via its current (possibly recombined) content -
+ *  unliking is just recombining the same like post to `{ active: false }`, reusing
+ *  the exact mechanism edits already use rather than a separate remove/undo path. */
+interface ReactionContent {
+  active: boolean;
+}
+
+function encodeReaction(r: ReactionContent): string {
+  return JSON.stringify(r);
+}
+
+function decodeReaction(content: string): ReactionContent {
+  try {
+    const parsed = JSON.parse(content);
+    return { active: parsed?.active !== false };
+  } catch {
+    return { active: true };
+  }
+}
+
+/**
  * Wraps a real in-browser Helix libp2p peer: identity, registration, live
  * gossipsub feed, posting, and follows. Runs entirely inside the webview -
  * see the project plan for why (PWA/mobile support, not just desktop).
@@ -50,7 +93,7 @@ export class HelixClient {
   private selfGenome?: Genome;
   private posts: Helix[] = [];
   private readonly listeners = new Set<() => void>();
-  private started = false;
+  private connectPromise?: Promise<void>;
   private version = 0;
 
   /** Bumped on every state change - lets useSyncExternalStore detect updates. */
@@ -76,10 +119,13 @@ export class HelixClient {
     for (const listener of this.listeners) listener();
   }
 
-  async start(displayName: string): Promise<void> {
-    if (this.started) return;
-    this.started = true;
+  /** Identity/node/dial - doesn't need a display name. Idempotent. */
+  connect(): Promise<void> {
+    if (!this.connectPromise) this.connectPromise = this.doConnect();
+    return this.connectPromise;
+  }
 
+  private async doConnect(): Promise<void> {
     const identity = await loadOrCreateIdentity();
     this.node = await createHelixNode({ port: 0, privateKey: identity.privateKey, browser: true });
     this.hlc = new HybridLogicalClock(this.node.peerId.toString());
@@ -95,9 +141,22 @@ export class HelixClient {
     } catch (err) {
       console.warn(`[helix] couldn't dial bootstrap peer ${bootstrap} - continuing standalone`, err);
     }
+  }
 
+  /** Registers under `displayName` once connect() has finished, then creates the
+   *  one-time "profile record" post - see editProfile() for how it's later edited. */
+  async register(displayName: string): Promise<void> {
+    if (this.selfGenome) return;
+    await this.connect();
     const { genome } = await registerUser(this.node, this.store, displayName);
     this.selfGenome = genome;
+
+    const profilePost = await createPostApi(this.node, this.store, this.hlc, {
+      authorGenome: genome.genome,
+      kind: "profile",
+      content: encodeProfile({ displayName }),
+    });
+    this.posts.unshift(profilePost);
     this.notify();
   }
 
@@ -128,14 +187,17 @@ export class HelixClient {
 
   /** Top-level posts only - replies are surfaced via getRepliesTo() in the thread view.
    *  Only current versions are shown; an edited post's earlier versions stay reachable
-   *  by id (for provenance) but don't clutter the feed. */
+   *  by id (for provenance) but don't clutter the feed. Likes/boosts/profile records
+   *  are a different `kind` and never show up as ordinary posts. */
   getFeedPosts(): Post[] {
-    return this.posts.filter((post) => !post.parentPostId && this.isCurrent(post)).map((post) => this.toPost(post));
+    return this.posts
+      .filter((post) => post.kind === "post" && !post.parentPostId && this.isCurrent(post))
+      .map((post) => this.toPost(post));
   }
 
   getRepliesTo(postId: string): Post[] {
     return this.posts
-      .filter((post) => post.parentPostId === postId && this.isCurrent(post))
+      .filter((post) => post.kind === "post" && post.parentPostId === postId && this.isCurrent(post))
       .map((post) => this.toPost(post));
   }
 
@@ -147,16 +209,25 @@ export class HelixClient {
   }
 
   getPostsByAuthor(genome: string): Post[] {
-    return this.posts.filter((post) => post.genome === genome && this.isCurrent(post)).map((post) => this.toPost(post));
+    return this.posts
+      .filter((post) => post.kind === "post" && post.genome === genome && this.isCurrent(post))
+      .map((post) => this.toPost(post));
+  }
+
+  private getCurrentProfilePost(genome: string): Helix | undefined {
+    return this.posts.find((p) => p.genome === genome && p.kind === "profile" && this.isCurrent(p));
   }
 
   getUser(genome: string): User | undefined {
     const record = this.store.getGenome(genome);
     if (!record) return undefined;
     const graph = this.store.getFollowGraph();
+    // The profile post (if observed) is the current, editable name; Genesis's
+    // displayName is the immutable fallback used before one has propagated yet.
+    const profile = decodeProfile(this.getCurrentProfilePost(genome)?.content ?? "");
     return {
       id: record.genome,
-      displayName: record.displayName,
+      displayName: profile?.displayName ?? record.displayName,
       handle: `@${shortGenome(record.genome)}`,
       verified: false,
       avatarColor: avatarColorFor(record.genome),
@@ -206,6 +277,88 @@ export class HelixClient {
     return this.toPost(post);
   }
 
+  /** Edits the caller's own profile post (created once at register()) via the same
+   *  recombination path posts already use - the genome address itself never changes. */
+  async editProfile(displayName: string): Promise<void> {
+    if (!this.selfGenome) throw new Error("HelixClient.editProfile: not registered yet");
+    const current = this.getCurrentProfilePost(this.selfGenome.genome);
+    if (!current) throw new Error("HelixClient.editProfile: no profile post found");
+    await this.recombine(current.postId, encodeProfile({ displayName }));
+  }
+
+  private findOwnReaction(kind: "like" | "boost", targetPostId: string): Helix | undefined {
+    if (!this.selfGenome) return undefined;
+    return this.posts.find(
+      (p) => p.kind === kind && p.parentPostId === targetPostId && p.genome === this.selfGenome!.genome && this.isCurrent(p),
+    );
+  }
+
+  /** Sets the caller's like/boost state on a post to `active`. If a reaction already
+   *  exists (on or off), recombines it in place instead of creating a new one - one
+   *  linear edit chain per (author, target) pair, same rule createPost already enforces
+   *  for ordinary edits. A no-op if already in the requested state. */
+  private async react(kind: "like" | "boost", targetPostId: string, active: boolean): Promise<void> {
+    if (!this.selfGenome) throw new Error(`HelixClient.react: not registered yet`);
+    const existing = this.findOwnReaction(kind, targetPostId);
+    if (existing) {
+      if (decodeReaction(existing.content).active === active) return;
+      const post = await createPostApi(this.node, this.store, this.hlc, {
+        authorGenome: this.selfGenome.genome,
+        content: encodeReaction({ active }),
+        recombinesPostId: existing.postId,
+      });
+      this.posts.unshift(post);
+    } else {
+      if (!active) return; // nothing to turn off if it was never on
+      const post = await createPostApi(this.node, this.store, this.hlc, {
+        authorGenome: this.selfGenome.genome,
+        kind,
+        content: encodeReaction({ active: true }),
+        parentPostId: targetPostId,
+      });
+      this.posts.unshift(post);
+    }
+    this.notify();
+  }
+
+  like(postId: string): Promise<void> {
+    return this.react("like", postId, true);
+  }
+
+  unlike(postId: string): Promise<void> {
+    return this.react("like", postId, false);
+  }
+
+  boost(postId: string): Promise<void> {
+    return this.react("boost", postId, true);
+  }
+
+  unboost(postId: string): Promise<void> {
+    return this.react("boost", postId, false);
+  }
+
+  hasLiked(postId: string): boolean {
+    const r = this.findOwnReaction("like", postId);
+    return r !== undefined && decodeReaction(r.content).active;
+  }
+
+  hasBoosted(postId: string): boolean {
+    const r = this.findOwnReaction("boost", postId);
+    return r !== undefined && decodeReaction(r.content).active;
+  }
+
+  /** Distinct authoring genomes with an active (not toggled-off) reaction - not raw
+   *  post count, so an accidental double-click or a toggle-off/on cycle never
+   *  double-counts (there's no protocol-level duplicate rejection). */
+  private countActiveReactions(kind: HelixKind, targetPostId: string): number {
+    const genomes = new Set<string>();
+    for (const p of this.posts) {
+      if (p.kind !== kind || p.parentPostId !== targetPostId || !this.isCurrent(p)) continue;
+      if (decodeReaction(p.content).active) genomes.add(p.genome);
+    }
+    return genomes.size;
+  }
+
   private toPost(post: Helix): Post {
     const author = this.getUser(post.genome) ?? {
       id: post.genome,
@@ -220,11 +373,9 @@ export class HelixClient {
       content: post.content,
       timeAgo: formatTimeAgo(post.hlcTimestamp.physical),
       sealed: true,
-      replyCount: this.posts.filter((p) => p.parentPostId === post.postId && this.isCurrent(p)).length,
-      // No like/boost action exists in the protocol yet - real posts always start at 0
-      // rather than a fabricated number, unlike the mock-data pass this replaces.
-      boostCount: 0,
-      likeCount: 0,
+      replyCount: this.posts.filter((p) => p.kind === "post" && p.parentPostId === post.postId && this.isCurrent(p)).length,
+      boostCount: this.countActiveReactions("boost", post.postId),
+      likeCount: this.countActiveReactions("like", post.postId),
       wasEdited: post.recombinesPostId !== undefined,
     };
   }

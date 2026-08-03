@@ -92,7 +92,7 @@ const SIDEBAR_ITEMS = [
   { id: "about", label: "About Helix", icon: CircleHelp },
 ] as const;
 
-export function SettingsScreen({ onBack }: { onBack: () => void }) {
+export function SettingsScreen({ onBack, onEditProfile }: { onBack: () => void; onEditProfile: () => void }) {
   // Only a dark theme is implemented in this pass - the toggle is cosmetic/local state,
   // not a real light-mode switch, matching this pass's scope.
   const [darkMode, setDarkMode] = useState(true);
@@ -133,7 +133,11 @@ export function SettingsScreen({ onBack }: { onBack: () => void }) {
           </div>
         </div>
       </div>
-      <button type="button" className="flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-border bg-surface-alt">
+      <button
+        type="button"
+        onClick={onEditProfile}
+        className="flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-border bg-surface-alt"
+      >
         <Pencil size={16} className="text-ink" />
         <span className="text-sm font-semibold text-ink">Edit Profile</span>
       </button>

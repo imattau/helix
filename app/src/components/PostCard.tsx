@@ -1,14 +1,30 @@
 import { MessageCircleReply, RefreshCw, Heart, Send, BadgeCheck } from "lucide-react";
 import { Avatar } from "./Avatar";
 import { SealedBadge } from "./SealedBadge";
+import { useHelixState } from "../backend/HelixProvider";
 import type { Post } from "../types";
 
-function ActionStat({ icon: Icon, count }: { icon: typeof MessageCircleReply; count: number }) {
+function ActionStat({
+  icon: Icon,
+  count,
+  active,
+  onClick,
+}: {
+  icon: typeof MessageCircleReply;
+  count: number;
+  active?: boolean;
+  onClick?: () => void;
+}) {
+  const Wrapper = onClick ? "button" : "div";
   return (
-    <div className="flex items-center gap-1.5 rounded-md px-2 py-1">
-      <Icon size={16} className="text-ink-muted" />
-      <span className="text-xs font-semibold text-ink-muted">{count}</span>
-    </div>
+    <Wrapper
+      type={onClick ? "button" : undefined}
+      onClick={onClick}
+      className="flex items-center gap-1.5 rounded-md px-2 py-1"
+    >
+      <Icon size={16} className={active ? "fill-accent text-accent" : "text-ink-muted"} />
+      <span className={`text-xs font-semibold ${active ? "text-accent" : "text-ink-muted"}`}>{count}</span>
+    </Wrapper>
   );
 }
 
@@ -23,6 +39,8 @@ export function PostCard({
   onOpen?: (postId: string) => void;
   onOpenAuthor?: (userId: string) => void;
 }) {
+  const client = useHelixState();
+
   return (
     <div className="w-full rounded-2xl border border-border bg-surface p-4 flex flex-col gap-3">
       <div className="flex w-full items-center justify-between">
@@ -54,8 +72,18 @@ export function PostCard({
 
       <div className="flex w-full items-center justify-between">
         <ActionStat icon={MessageCircleReply} count={post.replyCount} />
-        <ActionStat icon={RefreshCw} count={post.boostCount} />
-        <ActionStat icon={Heart} count={post.likeCount} />
+        <ActionStat
+          icon={RefreshCw}
+          count={post.boostCount}
+          active={client.hasBoosted(post.id)}
+          onClick={() => (client.hasBoosted(post.id) ? client.unboost(post.id) : client.boost(post.id))}
+        />
+        <ActionStat
+          icon={Heart}
+          count={post.likeCount}
+          active={client.hasLiked(post.id)}
+          onClick={() => (client.hasLiked(post.id) ? client.unlike(post.id) : client.like(post.id))}
+        />
         <Send size={16} className="text-ink-muted" />
       </div>
     </div>

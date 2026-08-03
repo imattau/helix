@@ -11,7 +11,7 @@ import { encodePost } from '../node/messages.js';
 import type { HelixNode } from '../node/createNode.js';
 import type { HelixStore } from '../store/memoryStore.js';
 import type { HybridLogicalClock } from '../clock/hlc.js';
-import type { Attachment, Helix } from '../types/index.js';
+import type { Attachment, Helix, HelixKind } from '../types/index.js';
 
 /** Anti-spam gate: posts with less character-distribution diversity than this are rejected. */
 export const ENTROPY_THRESHOLD = 2.5;
@@ -37,6 +37,10 @@ export interface CreatePostOptions {
    * Mutually exclusive with `parentPostId`: the new post's position (parentPostId/writhe)
    * is derived from the target post being recombined, not chosen by the caller. */
   recombinesPostId?: string;
+  /** Defaults to 'post'. Ignored (inherited from the target instead) when recombining -
+   * a recombination replaces the content of the same kind of record, it can't change
+   * what a post *is*. See src/types/index.ts's HelixKind doc comment. */
+  kind?: HelixKind;
 }
 
 export async function createPost(
@@ -47,11 +51,6 @@ export async function createPost(
 ): Promise<Helix> {
   if (opts.recombinesPostId && opts.parentPostId) {
     throw new Error('createPost: recombinesPostId and parentPostId are mutually exclusive');
-  }
-
-  const entropy = calculate_entropy(opts.content);
-  if (entropy < ENTROPY_THRESHOLD) {
-    throw new SpamRejectedError(entropy);
   }
 
   // Recombination ("edit"): a new post that supersedes an earlier one by the same
@@ -70,6 +69,24 @@ export async function createPost(
     if (store.isSuperseded(opts.recombinesPostId)) {
       throw new Error(`createPost: ${opts.recombinesPostId} has already been recombined - one linear edit chain per post`);
     }
+  }
+
+  // A recombination can't change what a post *is* - kind always follows the target.
+  const kind: HelixKind = recombinationTarget?.kind ?? opts.kind ?? 'post';
+
+  // When recombining, the target (a previously-valid like/boost) already has a
+  // parentPostId that gets inherited below regardless of what the caller passes -
+  // only a brand-new like/boost needs this check.
+  if (!recombinationTarget && (kind === 'like' || kind === 'boost') && !opts.parentPostId) {
+    throw new Error(`createPost: kind '${kind}' requires parentPostId (what it targets)`);
+  }
+
+  // The character-diversity spam gate is meant for authored text - a like/boost has no
+  // content at all, and a profile post's content is a small JSON blob, neither of which
+  // should be judged as "spam" by that heuristic.
+  const entropy = kind === 'post' ? calculate_entropy(opts.content) : 0;
+  if (kind === 'post' && entropy < ENTROPY_THRESHOLD) {
+    throw new SpamRejectedError(entropy);
   }
 
   // hash/size are always computed from the actual bytes, never trusted from the caller -
@@ -99,7 +116,9 @@ export async function createPost(
     if (!parent) {
       throw new Error(`createPost: parent post ${opts.parentPostId} not found`);
     }
-    writhe = parent.writhe + 1;
+    // "Reply tree depth" isn't a meaningful concept for a like/boost - only real
+    // replies (kind 'post') deepen writhe; likes/boosts just reference their target.
+    if (kind === 'post') writhe = parent.writhe + 1;
   }
 
   // causalParents records what the author knew about at creation time: their own
@@ -126,6 +145,7 @@ export async function createPost(
     postId: globalThis.crypto.randomUUID(),
     genome: opts.authorGenome,
     content: opts.content,
+    kind,
     parentPostId,
     twist,
     writhe,
