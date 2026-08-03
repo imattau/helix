@@ -11,7 +11,7 @@ import { decodeGenesis, decodePost, decodeFollow } from "@helix/node/messages.js
 import { verifyProofOfWork, REGISTRATION_DIFFICULTY_BITS } from "@helix/crypto/pow.js";
 import { fromHex } from "@helix/crypto/hex.js";
 import type { Genome, Helix, HelixKind, Follow } from "@helix/types/index.js";
-import { loadOrCreateIdentity } from "./identity";
+import { loadOrCreateIdentity, isPublicDiscoveryEnabled } from "./identity";
 import { SearchIndex } from "./searchIndex";
 import type { Notification, Post, User } from "../types";
 
@@ -134,7 +134,8 @@ export class HelixClient {
 
   private async doConnect(): Promise<void> {
     const identity = await loadOrCreateIdentity();
-    this.node = await createHelixNode({ port: 0, privateKey: identity.privateKey, browser: true, publicDiscovery: true });
+    const publicDiscovery = isPublicDiscoveryEnabled();
+    this.node = await createHelixNode({ port: 0, privateKey: identity.privateKey, browser: true, publicDiscovery });
     this.hlc = new HybridLogicalClock(this.node.peerId.toString());
 
     this.node.services.pubsub.subscribe(TOPICS.GENESIS);
@@ -155,9 +156,12 @@ export class HelixClient {
     // publicly-reachable Helix nodes (e.g. another peer:a/peer:b-style deployment) -
     // same one-directional constraint the hardcoded bootstrap already has. Doesn't
     // block startup on it - fires and forgets, since the public DHT can be slow.
-    connectPublicDiscovery(this.node).catch((err) => {
-      console.warn(`[helix] DHT rendezvous discovery failed - continuing without it`, err);
-    });
+    // User-controlled - see identity.ts's isPublicDiscoveryEnabled()/SettingsScreen.
+    if (publicDiscovery) {
+      connectPublicDiscovery(this.node).catch((err) => {
+        console.warn(`[helix] DHT rendezvous discovery failed - continuing without it`, err);
+      });
+    }
   }
 
   /** Registers under `displayName` once connect() has finished, then creates the

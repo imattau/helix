@@ -7,6 +7,7 @@ import {
   Moon,
   Bell,
   Globe,
+  Radar,
   UserMinus,
   EyeOff,
   CircleX,
@@ -25,6 +26,7 @@ import { Avatar } from "../components/Avatar";
 import { HelixIcon } from "../components/Logo";
 import { useHelixState } from "../backend/HelixProvider";
 import { useCollapsed } from "../hooks/useCollapsed";
+import { isPublicDiscoveryEnabled, setPublicDiscoveryEnabled } from "../backend/identity";
 
 function SettingsGroup({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -105,6 +107,16 @@ export function SettingsScreen({
   // Only a dark theme is implemented in this pass - the toggle is cosmetic/local state,
   // not a real light-mode switch, matching this pass's scope.
   const [darkMode, setDarkMode] = useState(true);
+  const [publicDiscovery, setPublicDiscoveryState] = useState(isPublicDiscoveryEnabled());
+  // The libp2p node's service set (whether the DHT service is registered at all) is
+  // fixed at construction - there's no way to hot-swap it into a running node, so
+  // this takes effect on next connect() rather than live. Reloading is the simplest
+  // way to guarantee that without a stale half-applied state.
+  const togglePublicDiscovery = (enabled: boolean) => {
+    setPublicDiscoveryEnabled(enabled);
+    setPublicDiscoveryState(enabled);
+    window.location.reload();
+  };
   const client = useHelixState();
   const currentUser = client.getSelfUser();
   const genomeAddress = client.selfGenomeAddress ?? "";
@@ -198,8 +210,13 @@ export function SettingsScreen({
   );
 
   const privacyGroup = (
-    <div ref={sectionRefs.privacy}>
+    <div ref={sectionRefs.privacy} className="flex flex-col gap-2">
       <SettingsGroup label="Privacy & Safety">
+        <SettingsRow
+          icon={Radar}
+          label="Public Peer Discovery"
+          trailing={<Toggle checked={publicDiscovery} onChange={togglePublicDiscovery} />}
+        />
         <SettingsRow
           icon={UserMinus}
           label="Blocked accounts"
@@ -232,6 +249,11 @@ export function SettingsScreen({
           }
         />
       </SettingsGroup>
+      <p className="px-1 text-xs leading-relaxed text-ink-faint">
+        Public Peer Discovery announces this device on the public IPFS/libp2p network so it can find other Helix
+        peers without a hardcoded relay. Turning it off keeps you reachable only through Helix's own bootstrap
+        peer. Changing this reloads the app.
+      </p>
     </div>
   );
 
