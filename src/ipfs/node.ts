@@ -1,7 +1,13 @@
-import { createHelia, type Helia } from 'helia';
+import { createHeliaLight, type Helia } from 'helia';
+import { withHTTP } from '@helia/http';
+import { withLibp2p, libp2pDefaults, type HeliaWithLibp2p, type DefaultLibp2pServices, type CreateLibp2pOptions } from '@helia/libp2p';
+import { withBitswap } from '@helia/bitswap';
+import * as dagCbor from '@ipld/dag-cbor';
+import * as dagJson from '@ipld/dag-json';
+import * as json from 'multiformats/codecs/json';
+import { sha512 } from 'multiformats/hashes/sha2';
 import { MemoryBlockstore } from 'blockstore-core';
 import { MemoryDatastore } from 'datastore-core';
-import type { HeliaWithLibp2p } from '@helia/libp2p';
 
 /** createHelia()'s declared return type doesn't reflect that it's always libp2p-backed internally - see @helia/libp2p's HeliaWithLibp2p. */
 export type IpfsNode = Helia & HeliaWithLibp2p;
@@ -16,12 +22,48 @@ export type IpfsNode = Helia & HeliaWithLibp2p;
  *
  * Storage is in-memory (MemoryBlockstore/MemoryDatastore), matching this project's
  * existing no-persistence philosophy - nothing survives process restart.
+ *
+ * IMPORTANT: this deliberately does NOT use the top-level `createHelia()` helper.
+ * `createHelia()` hardcodes its own default libp2p config with no way to override
+ * it (its internal `withLibp2p(builder)` call passes no options), and that default
+ * enables ~8 public-network services (bootstrap peer discovery, a full Kademlia DHT
+ * client, autoNAT, autoTLS, dcutr, UPnP, two delegated-routing HTTP clients, a
+ * circuit relay server) - all aimed at joining the public IPFS network. This project
+ * never does that: peers only ever `dial()` a specific multiaddr learned via the
+ * `IPFS_ADDR` gossipsub signal (see src/cli/peer.ts), never DHT/bootstrap-based
+ * discovery. Left at those defaults, the unused services spend the whole process
+ * lifetime retrying unreachable public bootstrap/DHT/delegated-routing endpoints -
+ * confirmed by isolating createHelia() in a standalone script with zero peers/
+ * connections and watching RSS grow ~1GB/minute from that alone, which is what
+ * actually caused `npm run peer:a` to OOM-crash after being left running. Instead,
+ * this replicates createHelia()'s own composition recipe (createHeliaLight + withHTTP
+ * + withLibp2p + withBitswap, same codecs/hashers - see helia's own src/index.js) but
+ * starts from `libp2pDefaults()` (also re-exported by @helia/libp2p) and strips
+ * `peerDiscovery` down to none and `services` down to just `identify` - reusing
+ * Helia's own correctly version-matched transport/encrypter/muxer instances rather
+ * than importing our own (this project's Helix node is pinned to @libp2p/interface
+ * v2 for gossipsub compatibility while Helia needs v3 - see the class doc comment
+ * above - so importing tcp()/webSockets()/etc. ourselves here would silently resolve
+ * to the wrong major version and fail to typecheck against Helia's own types).
  */
 export async function createIpfsNode(): Promise<IpfsNode> {
-  const helia = (await createHelia({
+  const base = createHeliaLight({
     blockstore: new MemoryBlockstore(),
     datastore: new MemoryDatastore(),
-  })) as IpfsNode;
+    codecs: [dagCbor, dagJson, json],
+    hashers: [sha512],
+  });
+  const defaults = libp2pDefaults();
+  // Narrower than DefaultLibp2pServices by design (see doc comment above) - cast past
+  // the structural mismatch rather than fabricate stub factories for services we
+  // deliberately dropped.
+  const libp2pOptions = {
+    ...defaults,
+    peerDiscovery: [],
+    services: { identify: defaults.services.identify },
+  } as unknown as CreateLibp2pOptions<DefaultLibp2pServices>;
+  const withNetworking = withLibp2p(withHTTP(base), libp2pOptions);
+  const helia = withBitswap(withNetworking as unknown as HeliaWithLibp2p<DefaultLibp2pServices>) as unknown as IpfsNode;
   await helia.start(); // createHelia() does not start the node itself - .libp2p is unusable until this runs
   return helia;
 }
