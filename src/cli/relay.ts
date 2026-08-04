@@ -1,3 +1,19 @@
+// Node only made `CustomEvent` a global (no flag) starting in v19 - libp2p's internal
+// event-target usage (main-event/TypedEventEmitter) needs it. Must run before any
+// libp2p import below. Confirmed by actually running the built bundle under Node
+// 18.19.1 (Ubuntu 24.04's default `nodejs` package, and this project's own
+// `nodejs (>= 18)` .deb dependency) - it crashed with ReferenceError: CustomEvent is
+// not defined on first use, despite `Event`/`EventTarget` already being global there.
+if (typeof globalThis.CustomEvent === 'undefined') {
+  globalThis.CustomEvent = class CustomEvent extends Event {
+    detail: unknown;
+    constructor(type: string, params: { detail?: unknown; bubbles?: boolean; cancelable?: boolean } = {}) {
+      super(type, params);
+      this.detail = params.detail ?? null;
+    }
+  } as typeof CustomEvent;
+}
+
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { generateKeyPair, privateKeyFromProtobuf, privateKeyToProtobuf } from '@libp2p/crypto/keys';

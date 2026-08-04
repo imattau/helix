@@ -15,6 +15,10 @@ Restart=on-failure
 RestartSec=5
 
 # Hardening - this process only ever needs network access and its own data dir.
+# No MemoryDenyWriteExecute: Node's V8 JIT needs RWX pages for compiled JS - with it
+# on, systemd's seccomp filter kills the process instantly (SIGSYS/SIGTRAP on start).
+# Confirmed by actually running this unit, not just reading it - it looked correct on
+# paper and failed on the very first start.
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
@@ -24,7 +28,6 @@ CapabilityBoundingSet=
 AmbientCapabilities=
 RestrictSUIDSGID=yes
 LockPersonality=yes
-MemoryDenyWriteExecute=yes
 
 [Install]
 WantedBy=multi-user.target

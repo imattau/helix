@@ -16,8 +16,26 @@ if [[ "$(id -u)" -ne 0 ]]; then
   exit 1
 fi
 
+# Confirmed by actually running the bundle, not assumed: Node 18.19.1 (Ubuntu 24.04's
+# own `nodejs` package) and even the latest Node 20.x lack APIs the libp2p dependency
+# chain needs unflagged (global CustomEvent, Promise.withResolvers) - it starts, then
+# crash-loops on first use. Only Node 22 has both.
+REQUIRED_NODE_MAJOR=22
+
 if ! command -v node >/dev/null 2>&1; then
-  echo "node was not found on PATH - install Node.js (>=18) first" >&2
+  echo "node was not found on PATH." >&2
+  echo "Install Node.js $REQUIRED_NODE_MAJOR+ first, e.g.:" >&2
+  echo "  curl -fsSL https://deb.nodesource.com/setup_${REQUIRED_NODE_MAJOR}.x | sudo -E bash -" >&2
+  echo "  apt-get install -y nodejs" >&2
+  exit 1
+fi
+
+NODE_MAJOR="$(node -e 'console.log(process.versions.node.split(".")[0])')"
+if [[ "$NODE_MAJOR" -lt "$REQUIRED_NODE_MAJOR" ]]; then
+  echo "node $(node --version) is too old - this needs Node.js $REQUIRED_NODE_MAJOR+." >&2
+  echo "Ubuntu's own apt nodejs package is too old for this; install from NodeSource:" >&2
+  echo "  curl -fsSL https://deb.nodesource.com/setup_${REQUIRED_NODE_MAJOR}.x | sudo -E bash -" >&2
+  echo "  apt-get install -y nodejs" >&2
   exit 1
 fi
 
