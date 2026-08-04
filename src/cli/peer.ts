@@ -3,7 +3,7 @@ import { multiaddr as multiaddrV13 } from '@multiformats/multiaddr-v13';
 import path from 'node:path';
 import { generateHelixIdentity } from '../crypto/keys.js';
 import { createHelixNode } from '../node/createNode.js';
-import { connectPublicDiscovery } from '../node/rendezvous.js';
+import { connectPublicDiscovery, announceAndVerifyRendezvous, discoverRendezvousPeers, filterHelixPeers } from '../node/rendezvous.js';
 import { createIpfsNode, type IpfsNode } from '../ipfs/node.js';
 import { MemoryStore } from '../store/memoryStore.js';
 import { BinaryStoreAdapter } from '@0xx0lostcause0xx0/polypack/persistence/node';
@@ -19,6 +19,17 @@ import { fetchAndVerifyAttachment, fetchAndVerifyAttachmentFromIpfs, publishAtta
 import { SpacerRegistry } from '../moderation/spacerRegistry.js';
 import { verifyProofOfWork, REGISTRATION_DIFFICULTY_BITS } from '../crypto/pow.js';
 import { decodeGenesis, decodePost, decodeFollow, decodeIpfsAddr, encodeGenesis, encodeIpfsAddr } from '../node/messages.js';
+import {
+  registerDirectoryHandler,
+  requestDirectory,
+  buildDirectorySnapshot,
+  encodeDirectory,
+  decodeDirectory,
+  ingestDirectory,
+  DIRECTORY_BROADCAST_MAX_GENOMES,
+  DIRECTORY_BROADCAST_POSTS_PER_GENOME,
+  DIRECTORY_BROADCAST_INTERVAL_MS,
+} from '../node/directory.js';
 import { TOPICS } from '../node/pubsubTopics.js';
 import { calculate_entropy } from '../math/entropy.js';
 import { to_base4, from_base4 } from '../math/base4.js';
@@ -30,6 +41,15 @@ import type { Helix, Genome } from '../types/index.js';
 // Pre-existing "network knowledge" both peers already agree on - stands in for a
 // ratified spacer (out of scope: the DAO submission/voting flow itself, see the plan).
 const KNOWN_MISINFO = 'Drinking bleach cures the common cold according to unnamed doctors';
+
+/** How often a --public-discovery CLI peer re-announces its rendezvous key (provider
+ *  records expire on the DHT - see src/node/rendezvous.ts). */
+const DHT_REANNOUNCE_INTERVAL_MS = 30 * 60_000;
+/** How often a --public-discovery CLI peer re-queries for other Helix peers. Separate
+ *  from DHT_REANNOUNCE_INTERVAL_MS: re-announcing keeps this peer findable, but does
+ *  nothing for peers that come online after this one's initial connectPublicDiscovery
+ *  pass already finished - only a repeated query finds those. */
+const DHT_REDISCOVER_INTERVAL_MS = 5 * 60_000;
 
 function parseArgs(argv: string[]) {
   const args: Record<string, string> = {};
@@ -96,6 +116,36 @@ async function main() {
   node.services.pubsub.subscribe(TOPICS.POSTS);
   node.services.pubsub.subscribe(TOPICS.FOLLOWS);
   node.services.pubsub.subscribe(TOPICS.IPFS_ADDR);
+  node.services.pubsub.subscribe(TOPICS.DIRECTORY);
+
+  // Serve directory requests, ask every peer we connect to for its directory once,
+  // and periodically re-announce our own - see src/node/directory.ts.
+  registerDirectoryHandler(node, store);
+  const directoryRequestedPeers = new Set<string>();
+  node.addEventListener('peer:connect', (evt) => {
+    const peerId = evt.detail.toString();
+    if (directoryRequestedPeers.has(peerId)) return;
+    directoryRequestedPeers.add(peerId);
+    requestDirectory(node, peerId, {}, AbortSignal.timeout(15_000))
+      .then((snapshot) => {
+        const { genomesAccepted, postsAccepted } = ingestDirectory(store, snapshot);
+        console.log(`[${name}] [DIRECTORY] synced ${genomesAccepted} genomes / ${postsAccepted} posts from ${peerId}`);
+      })
+      .catch((err) => {
+        directoryRequestedPeers.delete(peerId);
+        console.warn(`[${name}] [DIRECTORY] request to ${peerId} failed: ${err instanceof Error ? err.message : err}`);
+      });
+  });
+  setInterval(() => {
+    const snapshot = buildDirectorySnapshot(store, {
+      limit: DIRECTORY_BROADCAST_MAX_GENOMES,
+      recentPostsPerGenome: DIRECTORY_BROADCAST_POSTS_PER_GENOME,
+    });
+    if (snapshot.entries.length === 0) return;
+    node.services.pubsub
+      .publish(TOPICS.DIRECTORY, encodeDirectory(snapshot))
+      .catch((err) => console.warn(`[${name}] [DIRECTORY] broadcast failed: ${err instanceof Error ? err.message : err}`));
+  }, DIRECTORY_BROADCAST_INTERVAL_MS).unref();
 
   // the first OTHER peer's genome we observe - who this peer will follow in the demo
   let firstPeerGenome: string | undefined;
@@ -132,8 +182,23 @@ async function main() {
         console.log(`[${name}] [FOLLOW-REJECTED] references an unknown genome - discarded`);
         return;
       }
-      store.getFollowGraph().addFollow(follow.followerGenome, follow.followeeGenome);
-      console.log(`[${name}] [FOLLOW] mirrored ${follow.followerGenome} -> ${follow.followeeGenome}`);
+      if (follow.action === 'unfollow') {
+        store.getFollowGraph().removeFollow(follow.followerGenome, follow.followeeGenome);
+        console.log(`[${name}] [UNFOLLOW] mirrored ${follow.followerGenome} -/-> ${follow.followeeGenome}`);
+      } else {
+        store.getFollowGraph().addFollow(follow.followerGenome, follow.followeeGenome);
+        console.log(`[${name}] [FOLLOW] mirrored ${follow.followerGenome} -> ${follow.followeeGenome}`);
+      }
+    } else if (evt.detail.topic === TOPICS.DIRECTORY) {
+      try {
+        const snapshot = decodeDirectory(evt.detail.data);
+        const { genomesAccepted, postsAccepted } = ingestDirectory(store, snapshot);
+        if (genomesAccepted > 0 || postsAccepted > 0) {
+          console.log(`[${name}] [DIRECTORY] received ${genomesAccepted} genomes / ${postsAccepted} posts`);
+        }
+      } catch (err) {
+        console.warn(`[${name}] [DIRECTORY-REJECTED] ${err instanceof Error ? err.message : err}`);
+      }
     } else if (evt.detail.topic === TOPICS.IPFS_ADDR) {
       const msg = decodeIpfsAddr(evt.detail.data);
       if (msg.peerId === ipfsNode.libp2p.peerId.toString()) return; // ignore our own announcement
@@ -255,6 +320,36 @@ async function main() {
     console.log(`[${name}] [DHT] connecting to the public IPFS/libp2p DHT for rendezvous...`);
     const peers = await connectPublicDiscovery(node);
     console.log(`[${name}] [DHT] found and dialed ${peers.length} rendezvous peer(s)`);
+    // Provider records expire on the DHT - re-announce periodically so a long-lived
+    // anchor stays discoverable without re-running the full discovery flow.
+    setInterval(() => {
+      announceAndVerifyRendezvous(node, AbortSignal.timeout(60_000)).catch((err: unknown) =>
+        console.warn(`[${name}] [DHT] re-announce failed: ${err instanceof Error ? err.message : err}`),
+      );
+    }, DHT_REANNOUNCE_INTERVAL_MS).unref();
+
+    // Re-announcing alone only keeps this peer findable - it does nothing for peers
+    // that registered after the initial connectPublicDiscovery pass above already
+    // finished. Periodically re-querying and dialing anyone new closes that gap.
+    setInterval(() => {
+      const signal = AbortSignal.timeout(90_000);
+      discoverRendezvousPeers(node, signal)
+        .then((peers) => {
+          const connected = new Set(node.getPeers().map((p) => p.toString()));
+          const unseen = peers.filter(
+            (peer) => peer.id.toString() !== node.peerId.toString() && !connected.has(peer.id.toString()),
+          );
+          return filterHelixPeers(node, unseen, signal);
+        })
+        .then((newPeers) => {
+          if (newPeers.length > 0) {
+            console.log(`[${name}] [DHT] rediscovery found ${newPeers.length} new Helix peer(s)`);
+          }
+        })
+        .catch((err: unknown) =>
+          console.warn(`[${name}] [DHT] periodic rediscovery failed: ${err instanceof Error ? err.message : err}`),
+        );
+    }, DHT_REDISCOVER_INTERVAL_MS).unref();
   }
 
   // alice (isProducer) is the one who broadcasts time-sensitive things (genesis,

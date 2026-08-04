@@ -7,6 +7,9 @@ import { identify, type Identify } from '@libp2p/identify';
 import { ping, type PingService } from '@libp2p/ping';
 import { kadDHT, removePrivateAddressesMapper, type KadDHT, type KadDHTInit } from '@libp2p/kad-dht';
 import { bootstrap } from '@libp2p/bootstrap';
+import { circuitRelayTransport, circuitRelayServer } from '@libp2p/circuit-relay-v2';
+import { autoNAT } from '@libp2p/autonat';
+import { dcutr } from '@libp2p/dcutr';
 import type { Ed25519PrivateKey } from '@libp2p/interface';
 
 /**
@@ -50,6 +53,24 @@ import type { Ed25519PrivateKey } from '@libp2p/interface';
  * dynamically, only on the non-browser path, so a browser bundle never even pulls in
  * their Node-only dependencies (dgram, net) - a static top-level import would otherwise
  * get bundled (as dead code) into every browser build.
+ *
+ * NOTE on circuit-relay-v2 / autoNAT / dcutr (NAT traversal): a social network's whole
+ * point is connecting to people you don't control the network of, and most residential/
+ * office connections are NAT'd with nothing forwarded - confirmed hands-on running this
+ * project's own DHT rendezvous from a NAT'd dev machine (see the project notes): the
+ * node's own listen addresses were private-only, so nothing on the public internet could
+ * ever have dialed it back even if discovery had gone perfectly. Client-mode DHT
+ * discovery alone can find a NAT'd peer's *record*; it can't make that peer reachable.
+ * `circuitRelayTransport()` gives a NAT'd node a `/p2p-circuit` address other peers can
+ * dial (by hopping through a relay it has a reservation with), `autoNAT()` tells a node
+ * whether it's actually publicly dialable or needs that fallback, and `dcutr()` opportunistically
+ * upgrades an established relayed connection to a direct one via hole-punching once both
+ * sides know about each other. Same @libp2p/interface v2 pin as kad-dht (see the CVE
+ * note above) - all three are on their last v2-compatible major (circuit-relay-v2 3.x,
+ * autonat/dcutr 2.x), not their newest, for exactly the same interface-compatibility
+ * reason. Bundled with `publicDiscovery` rather than as its own flag: relaying/hole-
+ * punching only matters once a node is reachable to strangers on the public internet in
+ * the first place, which is what publicDiscovery opts into.
  */
 
 /**
@@ -81,8 +102,17 @@ export async function createHelixNode(opts: {
   browser?: boolean;
   /** Dial the public IPFS/libp2p bootstrap swarm and join its DHT (client-mode only -
    *  see the NOTE above) to find Helix peers beyond a single hardcoded bootstrap - see
-   *  src/node/rendezvous.ts. Opt-in; off by default (and for every test in this repo). */
+   *  src/node/rendezvous.ts. Also enables circuit-relay-v2/autoNAT/dcutr (see the NAT
+   *  traversal NOTE above), since they're only useful once a node is dialable by
+   *  strangers at all. Opt-in; off by default (and for every test in this repo). */
   publicDiscovery?: boolean;
+  /** Also run the circuit-relay-v2 SERVER role, so other (NAT'd) Helix peers can get a
+   *  reservation on this node and be dialed via a `/p2p-circuit` address through it.
+   *  Only meaningful - and only worth enabling - on a node that's itself genuinely
+   *  publicly reachable (a real public IP with the listen port actually forwarded); a
+   *  NAT'd node offering to relay for others is pointless, since nothing could dial
+   *  *it* either. Ignored unless `publicDiscovery` is also set. Opt-in; off by default. */
+  relayServer?: boolean;
 }) {
   // Split into two full calls (rather than one config with conditionally-spread
   // service keys) because kad-dht declares `ping` as a *required* component
@@ -92,7 +122,16 @@ export async function createHelixNode(opts: {
     if (opts.publicDiscovery) {
       return createLibp2p({
         privateKey: opts.privateKey,
-        transports: [webSockets()],
+        // The bare `/p2p-circuit` address is circuit-relay-v2's "search" form - it's
+        // what actually triggers the reservation flow (see the NAT traversal NOTE
+        // above). Without an explicit listen address matching it, circuitRelayTransport
+        // never calls reserveRelay() at all: confirmed by tracing this directly against
+        // the public network - 40 of 52 connected peers advertised full HOP-relay
+        // support, yet zero reservations were attempted, because nothing had ever asked
+        // the transport to listen. Adding just the transport to `transports` wires in
+        // the capability to use a reservation once made; it doesn't request one.
+        addresses: { listen: ['/p2p-circuit'] },
+        transports: [webSockets(), circuitRelayTransport()],
         streamMuxers: [yamux()],
         connectionEncrypters: [noise()],
         peerDiscovery: [bootstrap({ list: PUBLIC_IPFS_BOOTSTRAP_PEERS })],
@@ -101,6 +140,8 @@ export async function createHelixNode(opts: {
           identify: identify(),
           ping: ping(),
           dht: kadDHT(PUBLIC_DHT_INIT),
+          autoNAT: autoNAT(),
+          dcutr: dcutr(),
         },
       });
     }
@@ -124,10 +165,41 @@ export async function createHelixNode(opts: {
   const wsPort = opts.port === 0 ? 0 : opts.port + 1;
   const addresses = { listen: [`/ip4/0.0.0.0/tcp/${opts.port}`, `/ip4/0.0.0.0/tcp/${wsPort}/ws`] };
   if (opts.publicDiscovery) {
+    // Split on relayServer for the same reason the browser/publicDiscovery split above
+    // exists (see the comment on createHelixNode's call site history): a conditionally-
+    // spread `relay?:` key would still type-check here since nothing declares `relay` as
+    // a *required* service dependency, but a full literal keeps this consistent with the
+    // rest of the file rather than mixing both styles.
+    if (opts.relayServer) {
+      // No `/p2p-circuit` listen address here: a relayServer node is meant to be the
+      // reachable anchor (see the NAT traversal NOTE above) - it already has a real
+      // listen address, so it has no reason to go find a *different* relay to hop
+      // through itself.
+      return createLibp2p({
+        privateKey: opts.privateKey,
+        addresses,
+        transports: [tcp(), webSockets(), circuitRelayTransport()],
+        streamMuxers: [yamux()],
+        connectionEncrypters: [noise()],
+        peerDiscovery: [mdns(), bootstrap({ list: PUBLIC_IPFS_BOOTSTRAP_PEERS })],
+        services: {
+          pubsub: gossipsub({ allowPublishToZeroTopicPeers: true, emitSelf: false }),
+          identify: identify(),
+          ping: ping(),
+          dht: kadDHT(PUBLIC_DHT_INIT),
+          autoNAT: autoNAT(),
+          dcutr: dcutr(),
+          relay: circuitRelayServer(),
+        },
+      });
+    }
+    // The bare `/p2p-circuit` address is what actually triggers circuitRelayTransport's
+    // reservation flow - see the identical comment on the browser+publicDiscovery
+    // branch above, where this was confirmed against the live public network.
     return createLibp2p({
       privateKey: opts.privateKey,
-      addresses,
-      transports: [tcp(), webSockets()],
+      addresses: { listen: [...addresses.listen, '/p2p-circuit'] },
+      transports: [tcp(), webSockets(), circuitRelayTransport()],
       streamMuxers: [yamux()],
       connectionEncrypters: [noise()],
       peerDiscovery: [mdns(), bootstrap({ list: PUBLIC_IPFS_BOOTSTRAP_PEERS })],
@@ -136,6 +208,8 @@ export async function createHelixNode(opts: {
         identify: identify(),
         ping: ping(),
         dht: kadDHT(PUBLIC_DHT_INIT),
+        autoNAT: autoNAT(),
+        dcutr: dcutr(),
       },
     });
   }
