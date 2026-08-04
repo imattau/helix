@@ -9,10 +9,17 @@ import { SearchScreen } from "./screens/SearchScreen";
 import { NotificationsScreen } from "./screens/NotificationsScreen";
 import { BackupKeyScreen } from "./screens/BackupKeyScreen";
 import { QrPairingScreen } from "./screens/QrPairingScreen";
+import { BlockedAccountsScreen } from "./screens/BlockedAccountsScreen";
+import { WhoCanReplyScreen } from "./screens/WhoCanReplyScreen";
+import { NotificationSettingsScreen } from "./screens/NotificationSettingsScreen";
+import { LanguageScreen } from "./screens/LanguageScreen";
+import { AboutScreen } from "./screens/AboutScreen";
 import { useHelixState } from "./backend/HelixProvider";
+import { useTheme } from "./hooks/useTheme";
 import { NavRail } from "./components/NavRail";
 import { FeedListPane } from "./components/FeedListPane";
 import type { NavTab } from "./components/BottomNav";
+import type { Post } from "./types";
 
 type Route =
   | { screen: "home" }
@@ -24,11 +31,18 @@ type Route =
   | { screen: "search" }
   | { screen: "notifications" }
   | { screen: "backupKey" }
-  | { screen: "qrPairing" };
+  | { screen: "qrPairing" }
+  | { screen: "blockedAccounts" }
+  | { screen: "whoCanReply" }
+  | { screen: "notificationSettings" }
+  | { screen: "language" }
+  | { screen: "about" };
 
 function App() {
   const client = useHelixState();
+  const [theme, setTheme] = useTheme();
   const [stack, setStack] = useState<Route[]>([{ screen: "home" }]);
+  const getFeedPosts = (): Post[] => client.getFeedPosts().filter((post) => !client.isBlocked(post.author.id));
 
   const push = (route: Route) => setStack((s) => [...s, route]);
   const pop = () => setStack((s) => (s.length > 1 ? s.slice(0, -1) : s));
@@ -66,7 +80,7 @@ function App() {
     case "home":
       screen = (
         <HomeFeedScreen
-          posts={client.getFeedPosts()}
+          posts={getFeedPosts()}
           onOpenPost={(postId) => push({ screen: "detail", postId })}
           onOpenAuthor={(userId) => push({ screen: "profile", userId })}
           onCompose={() => push({ screen: "compose" })}
@@ -136,6 +150,13 @@ function App() {
           onBack={pop}
           onEditProfile={() => push({ screen: "editProfile" })}
           onBackupKey={() => push({ screen: "backupKey" })}
+          theme={theme}
+          onThemeChange={setTheme}
+          onOpenBlockedAccounts={() => push({ screen: "blockedAccounts" })}
+          onOpenWhoCanReply={() => push({ screen: "whoCanReply" })}
+          onOpenNotificationSettings={() => push({ screen: "notificationSettings" })}
+          onOpenLanguage={() => push({ screen: "language" })}
+          onOpenAbout={() => push({ screen: "about" })}
         />
       );
       break;
@@ -144,6 +165,21 @@ function App() {
       break;
     case "editProfile":
       screen = <EditProfileScreen onCancel={pop} onSaved={pop} />;
+      break;
+    case "blockedAccounts":
+      screen = <BlockedAccountsScreen onBack={pop} />;
+      break;
+    case "whoCanReply":
+      screen = <WhoCanReplyScreen onBack={pop} />;
+      break;
+    case "notificationSettings":
+      screen = <NotificationSettingsScreen onBack={pop} />;
+      break;
+    case "language":
+      screen = <LanguageScreen onBack={pop} />;
+      break;
+    case "about":
+      screen = <AboutScreen onBack={pop} />;
       break;
     case "search":
       screen = (
@@ -173,7 +209,12 @@ function App() {
     current.screen !== "settings" &&
     current.screen !== "editProfile" &&
     current.screen !== "backupKey" &&
-    current.screen !== "qrPairing";
+    current.screen !== "qrPairing" &&
+    current.screen !== "blockedAccounts" &&
+    current.screen !== "whoCanReply" &&
+    current.screen !== "notificationSettings" &&
+    current.screen !== "language" &&
+    current.screen !== "about";
   const activeTab: NavTab =
     current.screen === "search" || current.screen === "notifications"
       ? current.screen
@@ -192,7 +233,7 @@ function App() {
           selfUser={client.getSelfUser()}
         />
       )}
-      {showFeedPane && <FeedListPane posts={client.getFeedPosts()} onOpenPost={(postId) => push({ screen: "detail", postId })} />}
+      {showFeedPane && <FeedListPane posts={getFeedPosts()} onOpenPost={(postId) => push({ screen: "detail", postId })} />}
       <div className="min-w-0 flex-1">{screen}</div>
     </div>
   );

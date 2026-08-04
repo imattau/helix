@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { ShieldAlert, Eye, Copy, Check, ArrowLeft } from "lucide-react";
-import { exportPrivateKeyHex } from "../backend/identity";
+import { exportPrivateKeyHex, getStoredDisplayName } from "../backend/identity";
 
 /**
  * Reveals the raw Ed25519 private key backing the user's identity, so they can
@@ -8,21 +8,33 @@ import { exportPrivateKeyHex } from "../backend/identity";
  * string (persisted only in this browser's localStorage - see identity.ts) is the
  * entire identity. Lose it and there's no recovery.
  *
+ * Also surfaces the display name alongside it: registerUser() derives the genome
+ * address from (publicKey, displayName), so the key *alone* isn't a complete
+ * backup - restoring with the right key but the wrong name silently produces a
+ * different identity (see identity.ts's restoreIdentity, OnboardingScreen's
+ * restore flow). Both need to be saved together.
+ *
  * Used two ways: once, gating onboarding (mode="onboarding", must confirm before
  * continuing - see OnboardingScreen), and any time after via Settings
- * (mode="settings", just a reveal/copy screen, no gate).
+ * (mode="settings", just a reveal/copy screen, no gate). In onboarding, the name
+ * hasn't been persisted yet (that happens after this screen - see
+ * HelixProvider.handleOnboardingSubmit), so the caller passes it in directly
+ * rather than this screen reading it from storage.
  */
 export function BackupKeyScreen({
   mode,
+  displayName,
   onDone,
 }: {
   mode: "onboarding" | "settings";
+  displayName?: string;
   onDone: () => void;
 }) {
   const [keyHex, setKeyHex] = useState<string>();
   const [revealed, setRevealed] = useState(false);
   const [copied, setCopied] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
+  const name = displayName ?? getStoredDisplayName() ?? "";
 
   useEffect(() => {
     exportPrivateKeyHex().then(setKeyHex);
@@ -58,7 +70,8 @@ export function BackupKeyScreen({
           <ShieldAlert size={18} className="mt-0.5 shrink-0 text-warning" />
           <p className="flex-1 text-xs leading-relaxed text-warning">
             Anyone with this key can post as you. Never share it, and store it somewhere only you control (a
-            password manager or offline backup) - never in a chat message or unencrypted note.
+            password manager or offline backup) - never in a chat message or unencrypted note. You'll also need your
+            display name, below, to log back in with this key later - save the two together.
           </p>
         </div>
 
@@ -85,6 +98,17 @@ export function BackupKeyScreen({
           </button>
         </div>
 
+        <div className="flex w-full flex-col gap-2 rounded-2xl border border-border bg-surface p-4">
+          <span className="text-xs font-bold uppercase text-ink-muted">Display name</span>
+          <div className="flex items-center rounded-xl border border-border bg-surface-alt px-3 py-3">
+            <span className="min-w-0 flex-1 break-all text-[15px] text-ink">{name || "—"}</span>
+          </div>
+          <p className="text-xs leading-relaxed text-ink-faint">
+            Your identity address is derived from this exact name plus your key. The wrong name with the right key
+            logs you into a different, new identity instead of this one.
+          </p>
+        </div>
+
         {mode === "onboarding" && (
           <label className="flex items-start gap-2.5 text-left">
             <input
@@ -93,7 +117,7 @@ export function BackupKeyScreen({
               onChange={(e) => setConfirmed(e.target.checked)}
               className="mt-0.5 size-4 shrink-0 accent-accent"
             />
-            <span className="text-xs text-ink-muted">I've saved my private key somewhere safe.</span>
+            <span className="text-xs text-ink-muted">I've saved my private key and display name somewhere safe.</span>
           </label>
         )}
       </div>

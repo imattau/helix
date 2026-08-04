@@ -30,6 +30,26 @@
   --font-logo: "Outfit", ui-sans-serif, system-ui, sans-serif;
 }
 
+/* Light theme override - swaps the @theme color vars above when the Dark Mode
+ * toggle (SettingsScreen) sets data-theme="light" on <html>. Utilities like
+ * bg-bg/text-ink reference these vars at runtime, not at build time, so
+ * overriding them here is enough to re-theme every screen without touching
+ * component code. */
+html[data-theme="light"] {
+  --color-bg: #f7f7f8;
+  --color-surface: #ffffff;
+  --color-surface-alt: #eeeef1;
+  --color-border: #e2e2e6;
+  --color-ink: #16171b;
+  --color-ink-muted: #6b6e78;
+  --color-ink-faint: #9a9da6;
+  --color-accent: #5e50f9;
+  --color-accent-soft: rgb(94 80 249 / 10%);
+  --color-danger: #ef4444;
+  --color-danger-soft: rgb(239 68 68 / 8%);
+  --color-warning: #dc2626;
+}
+
 html,
 body,
 #root {

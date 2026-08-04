@@ -189,6 +189,7 @@ export class HelixClient {
     this.store = new MemoryStore({
       storeAdapter: adapters.storeAdapter,
       followGraphAdapter: adapters.followGraphAdapter,
+      blockGraphAdapter: adapters.blockGraphAdapter,
       peakGraphAdapter: adapters.peakGraphAdapter,
     });
     this.searchIndex = new SearchIndex(adapters.searchIndexAdapter);
@@ -686,6 +687,31 @@ export class HelixClient {
     const unfollow = await unfollowUser(this.node, this.store, this.hlc, this.selfGenome.genome, genome);
     this.followEvents.push(unfollow);
     this.notify();
+  }
+
+  /** Unlike follow/unfollow, this never touches the network - blocking is purely local
+   *  (see src/social/blockGraph.ts for why), just a graph edge persisted the same way
+   *  as follows so it survives restarts without a bespoke localStorage key. */
+  blockUser(genome: string): void {
+    if (!this.selfGenome) throw new Error("HelixClient.blockUser: not registered yet");
+    this.store.getBlockGraph().addBlock(this.selfGenome.genome, genome);
+    this.notify();
+  }
+
+  unblockUser(genome: string): void {
+    if (!this.selfGenome) throw new Error("HelixClient.unblockUser: not registered yet");
+    this.store.getBlockGraph().removeBlock(this.selfGenome.genome, genome);
+    this.notify();
+  }
+
+  isBlocked(genome: string): boolean {
+    if (!this.selfGenome) return false;
+    return this.store.getBlockGraph().isBlocked(this.selfGenome.genome, genome);
+  }
+
+  getBlockedGenomes(): string[] {
+    if (!this.selfGenome) return [];
+    return this.store.getBlockGraph().getBlocked(this.selfGenome.genome);
   }
 
   /** "Edit" a post: publishes a new version that supersedes it. The original stays in

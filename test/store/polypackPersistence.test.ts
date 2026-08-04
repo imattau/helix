@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
 import { BinaryStoreAdapter } from '@0xx0lostcause0xx0/polypack/persistence/node';
 import { FollowGraph } from '../../src/social/followGraph.js';
+import { BlockGraph } from '../../src/social/blockGraph.js';
 import { PeakGraph } from '../../src/store/peakGraph.js';
 import type { MMRPeak } from '../../src/store/mmr.js';
 
@@ -19,6 +20,23 @@ describe('PolyPack persistence', () => {
       await restored.load();
       expect(restored.getFollowing('alice')).toEqual(['bob']);
       expect(restored.getFollowers('bob')).toEqual(['alice']);
+      await restored.dispose();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('restores block graph edges from disk', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'helix-block-graph-'));
+    try {
+      const first = new BlockGraph(new BinaryStoreAdapter({ storeDir: dir }));
+      first.addBlock('alice', 'bob');
+      await first.dispose();
+
+      const restored = new BlockGraph(new BinaryStoreAdapter({ storeDir: dir }));
+      await restored.load();
+      expect(restored.getBlocked('alice')).toEqual(['bob']);
+      expect(restored.isBlocked('alice', 'bob')).toBe(true);
       await restored.dispose();
     } finally {
       await rm(dir, { recursive: true, force: true });

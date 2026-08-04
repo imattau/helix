@@ -3,6 +3,7 @@ import type { PersistenceAdapter, PolyNode } from '@0xx0lostcause0xx0/polypack';
 import { MerkleMountainRange } from './mmr.js';
 import { PeakGraph } from './peakGraph.js';
 import { FollowGraph } from '../social/followGraph.js';
+import { BlockGraph } from '../social/blockGraph.js';
 import { computeMerkleRoot } from './merkle.js';
 import { toHex, fromHex } from '../crypto/hex.js';
 import { from_base4 } from '../math/base4.js';
@@ -82,6 +83,7 @@ export interface HelixStore {
   getReactionsTo(targetPostId: string, kind: 'like' | 'boost'): Helix[];
   getProfilePost(genome: string): Helix | undefined;
   getFollowGraph(): FollowGraph;
+  getBlockGraph(): BlockGraph;
   getPeakGraph(): PeakGraph;
   isSuperseded(postId: string): boolean;
   getCurrentVersion(postId: string): Helix | undefined;
@@ -90,6 +92,7 @@ export interface HelixStore {
 export class MemoryStore implements HelixStore {
   private graph: PolyGraph;
   private followGraph: FollowGraph;
+  private blockGraph: BlockGraph;
   private peakGraph: PeakGraph;
   private mmrsByGenome = new Map<string, MerkleMountainRange>();
   private openTadByGenome = new Map<string, string>();
@@ -98,26 +101,28 @@ export class MemoryStore implements HelixStore {
     opts: {
       storeAdapter?: PersistenceAdapter;
       followGraphAdapter?: PersistenceAdapter;
+      blockGraphAdapter?: PersistenceAdapter;
       peakGraphAdapter?: PersistenceAdapter;
     } = {},
   ) {
     this.graph = new PolyGraph(opts.storeAdapter ?? new MemoryAdapter(), Infinity);
     this.followGraph = new FollowGraph(opts.followGraphAdapter);
+    this.blockGraph = new BlockGraph(opts.blockGraphAdapter);
     this.peakGraph = new PeakGraph(opts.peakGraphAdapter);
   }
 
   async loadPersistentGraphs(): Promise<void> {
     await this.graph.load();
     this.rebuildOpenTads();
-    await Promise.all([this.followGraph.load(), this.peakGraph.load()]);
+    await Promise.all([this.followGraph.load(), this.blockGraph.load(), this.peakGraph.load()]);
   }
 
   async flushPersistentGraphs(): Promise<void> {
-    await Promise.all([this.graph.flush(), this.followGraph.flush(), this.peakGraph.flush()]);
+    await Promise.all([this.graph.flush(), this.followGraph.flush(), this.blockGraph.flush(), this.peakGraph.flush()]);
   }
 
   async disposePersistentGraphs(): Promise<void> {
-    await Promise.all([this.graph.dispose(), this.followGraph.dispose(), this.peakGraph.dispose()]);
+    await Promise.all([this.graph.dispose(), this.followGraph.dispose(), this.blockGraph.dispose(), this.peakGraph.dispose()]);
   }
 
   saveGenome(genome: Genome): void {
@@ -291,6 +296,10 @@ export class MemoryStore implements HelixStore {
 
   getFollowGraph(): FollowGraph {
     return this.followGraph;
+  }
+
+  getBlockGraph(): BlockGraph {
+    return this.blockGraph;
   }
 
   getPeakGraph(): PeakGraph {

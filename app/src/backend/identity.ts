@@ -77,3 +77,31 @@ export function isPublicDiscoveryEnabled(): boolean {
 export function setPublicDiscoveryEnabled(enabled: boolean): void {
   localStorage.setItem(PUBLIC_DISCOVERY_KEY, String(enabled));
 }
+
+/**
+ * "Log out" here means forgetting this device's identity, not ending a server
+ * session - there is no account to sign back into. Without the private key
+ * backed up elsewhere (see exportPrivateKeyHex), this is permanent: the next
+ * loadOrCreateIdentity() call generates a brand new, unrelated genome.
+ */
+export function clearIdentity(): void {
+  localStorage.removeItem(STORAGE_KEY);
+  localStorage.removeItem(DISPLAY_NAME_KEY);
+}
+
+/**
+ * Restores a device to a previously-backed-up identity - the counterpart to
+ * exportPrivateKeyHex(). Requires the exact original display name too: the genome
+ * is derived from (publicKey, displayName) (see registerUser()), so pairing this
+ * key with a different name would silently produce a different, unrelated genome
+ * rather than recovering the original one. Validates the key parses as a real
+ * Ed25519 private key before persisting anything - throws otherwise, leaving
+ * existing storage untouched. Callers (OnboardingScreen) reload the page after
+ * this so connect() re-runs and picks up the restored key from scratch.
+ */
+export async function restoreIdentity(privateKeyHex: string, displayName: string): Promise<void> {
+  const trimmedHex = privateKeyHex.trim();
+  privateKeyFromRaw(fromHex(trimmedHex)); // throws on malformed/wrong-length input
+  localStorage.setItem(STORAGE_KEY, trimmedHex);
+  saveDisplayName(displayName.trim());
+}

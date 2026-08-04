@@ -9,11 +9,8 @@ import {
   Globe,
   Radar,
   UserMinus,
-  EyeOff,
   CircleX,
   CircleHelp,
-  FileText,
-  ShieldAlert,
   Cog,
   LogOut,
   ChevronRight,
@@ -26,7 +23,11 @@ import { Avatar } from "../components/Avatar";
 import { HelixIcon } from "../components/Logo";
 import { useHelixState } from "../backend/HelixProvider";
 import { useCollapsed } from "../hooks/useCollapsed";
-import { isPublicDiscoveryEnabled, setPublicDiscoveryEnabled } from "../backend/identity";
+import { isPublicDiscoveryEnabled, setPublicDiscoveryEnabled, clearIdentity } from "../backend/identity";
+import { REPLY_AUDIENCE_LABEL, getReplyAudience } from "../backend/replyAudience";
+import { getLanguageLabel, getLanguageCode } from "../backend/languagePrefs";
+import { type Theme } from "../hooks/useTheme";
+import { APP_VERSION } from "../version";
 
 function SettingsGroup({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -99,15 +100,36 @@ export function SettingsScreen({
   onBack,
   onEditProfile,
   onBackupKey,
+  theme,
+  onThemeChange,
+  onOpenBlockedAccounts,
+  onOpenWhoCanReply,
+  onOpenNotificationSettings,
+  onOpenLanguage,
+  onOpenAbout,
 }: {
   onBack: () => void;
   onEditProfile: () => void;
   onBackupKey: () => void;
+  theme: Theme;
+  onThemeChange: (theme: Theme) => void;
+  onOpenBlockedAccounts: () => void;
+  onOpenWhoCanReply: () => void;
+  onOpenNotificationSettings: () => void;
+  onOpenLanguage: () => void;
+  onOpenAbout: () => void;
 }) {
-  // Only a dark theme is implemented in this pass - the toggle is cosmetic/local state,
-  // not a real light-mode switch, matching this pass's scope.
-  const [darkMode, setDarkMode] = useState(true);
   const [publicDiscovery, setPublicDiscoveryState] = useState(isPublicDiscoveryEnabled());
+  const replyAudience = getReplyAudience();
+  const languageLabel = getLanguageLabel(getLanguageCode());
+  const [confirmingLogOut, setConfirmingLogOut] = useState(false);
+  // There's no server session and no way to sign back in without a saved private key
+  // (see identity.ts's clearIdentity) - reloading after clearing sends the user straight
+  // back to onboarding, same as a first run.
+  const logOut = () => {
+    clearIdentity();
+    window.location.reload();
+  };
   // The libp2p node's service set (whether the DHT service is registered at all) is
   // fixed at construction - there's no way to hot-swap it into a running node, so
   // this takes effect on next connect() rather than live. Reloading is the simplest
@@ -118,6 +140,7 @@ export function SettingsScreen({
     window.location.reload();
   };
   const client = useHelixState();
+  const blockedCount = client.getBlockedGenomes().length;
   const currentUser = client.getSelfUser();
   const genomeAddress = client.selfGenomeAddress ?? "";
   const [sidebarCollapsed, setSidebarCollapsed] = useCollapsed("helix.pane.settingsSidebar");
@@ -183,13 +206,17 @@ export function SettingsScreen({
   const preferencesGroup = (
     <div ref={sectionRefs.preferences}>
       <SettingsGroup label="Preferences">
-        <SettingsRow icon={Moon} label="Dark Mode" trailing={<Toggle checked={darkMode} onChange={setDarkMode} />} />
+        <SettingsRow
+          icon={Moon}
+          label="Dark Mode"
+          trailing={<Toggle checked={theme === "dark"} onChange={(v) => onThemeChange(v ? "dark" : "light")} />}
+        />
         <SettingsRow
           icon={Bell}
           label="Notifications"
+          onClick={onOpenNotificationSettings}
           trailing={
             <div className="flex items-center gap-2">
-              <span className="text-sm text-ink-muted">Push & Email</span>
               <ChevronRight size={16} className="text-ink-muted" />
             </div>
           }
@@ -198,9 +225,10 @@ export function SettingsScreen({
           icon={Globe}
           label="Language"
           last
+          onClick={onOpenLanguage}
           trailing={
             <div className="flex items-center gap-2">
-              <span className="text-sm text-ink-muted">English (US)</span>
+              <span className="text-sm text-ink-muted">{languageLabel}</span>
               <ChevronRight size={16} className="text-ink-muted" />
             </div>
           }
@@ -220,19 +248,10 @@ export function SettingsScreen({
         <SettingsRow
           icon={UserMinus}
           label="Blocked accounts"
+          onClick={onOpenBlockedAccounts}
           trailing={
             <div className="flex items-center gap-2">
-              <span className="text-sm text-ink-muted">12 accounts</span>
-              <ChevronRight size={16} className="text-ink-muted" />
-            </div>
-          }
-        />
-        <SettingsRow
-          icon={EyeOff}
-          label="Muted words"
-          trailing={
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-ink-muted">8 phrases</span>
+              <span className="text-sm text-ink-muted">{blockedCount === 1 ? "1 account" : `${blockedCount} accounts`}</span>
               <ChevronRight size={16} className="text-ink-muted" />
             </div>
           }
@@ -241,9 +260,10 @@ export function SettingsScreen({
           icon={CircleX}
           label="Who can reply"
           last
+          onClick={onOpenWhoCanReply}
           trailing={
             <div className="flex items-center gap-2">
-              <span className="text-sm text-ink-muted">Followers only</span>
+              <span className="text-sm text-ink-muted">{REPLY_AUDIENCE_LABEL[replyAudience]}</span>
               <ChevronRight size={16} className="text-ink-muted" />
             </div>
           }
@@ -260,10 +280,8 @@ export function SettingsScreen({
   const aboutGroup = (
     <div ref={sectionRefs.about}>
       <SettingsGroup label="About">
-        <SettingsRow icon={CircleHelp} label="About Helix" trailing={<ChevronRight size={16} className="text-ink-muted" />} />
-        <SettingsRow icon={FileText} label="Terms of Service" trailing={<ChevronRight size={16} className="text-ink-muted" />} />
-        <SettingsRow icon={ShieldAlert} label="Privacy Policy" trailing={<ChevronRight size={16} className="text-ink-muted" />} />
-        <SettingsRow icon={Cog} label="App Version" last trailing={<span className="text-sm text-ink-muted">v2.1.0</span>} />
+        <SettingsRow icon={CircleHelp} label="About Helix" onClick={onOpenAbout} trailing={<ChevronRight size={16} className="text-ink-muted" />} />
+        <SettingsRow icon={Cog} label="App Version" last trailing={<span className="text-sm text-ink-muted">v{APP_VERSION}</span>} />
       </SettingsGroup>
     </div>
   );
@@ -295,7 +313,7 @@ export function SettingsScreen({
           {privacyGroup}
           {aboutGroup}
           <div className="w-full overflow-hidden rounded-2xl border border-border bg-surface">
-            <SettingsRow icon={LogOut} label="Log Out" danger last />
+            <SettingsRow icon={LogOut} label="Log Out" danger last onClick={() => setConfirmingLogOut(true)} />
           </div>
           {footer}
         </div>
@@ -353,7 +371,11 @@ export function SettingsScreen({
                 ))}
               </div>
               <div className="px-3">
-                <button type="button" className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm font-medium text-danger">
+                <button
+                  type="button"
+                  onClick={() => setConfirmingLogOut(true)}
+                  className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm font-medium text-danger"
+                >
                   <LogOut size={18} />
                   Log Out
                 </button>
@@ -372,6 +394,35 @@ export function SettingsScreen({
           </div>
         </div>
       </div>
+
+      {confirmingLogOut && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6">
+          <div className="flex w-full max-w-[360px] flex-col gap-4 rounded-2xl border border-border bg-surface p-5">
+            <h2 className="text-base font-bold text-ink">Log out?</h2>
+            <p className="text-sm leading-relaxed text-ink-muted">
+              Helix has no server accounts to sign back into. This forgets your private key on this device - unless
+              you've backed it up (see Backup Private Key), you'll lose access to {currentUser.displayName}{" "}
+              permanently and start over as a new identity.
+            </p>
+            <div className="flex w-full gap-3">
+              <button
+                type="button"
+                onClick={() => setConfirmingLogOut(false)}
+                className="flex-1 rounded-xl border border-border bg-surface-alt px-4 py-2.5 text-sm font-semibold text-ink"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={logOut}
+                className="flex-1 rounded-xl bg-danger px-4 py-2.5 text-sm font-semibold text-white"
+              >
+                Log Out
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }

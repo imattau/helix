@@ -54,18 +54,20 @@ async function createAdapter(storeName: string): Promise<PersistenceAdapter | un
 export async function createBrowserPolyPackAdapters(namespace: string): Promise<{
   storeAdapter?: PersistenceAdapter;
   followGraphAdapter?: PersistenceAdapter;
+  blockGraphAdapter?: PersistenceAdapter;
   peakGraphAdapter?: PersistenceAdapter;
   searchIndexAdapter?: PersistenceAdapter;
 }> {
   const prefix = `helix-${namespace}`;
   try {
-    const [storeAdapter, followGraphAdapter, peakGraphAdapter, searchIndexAdapter] = await Promise.all([
+    const [storeAdapter, followGraphAdapter, blockGraphAdapter, peakGraphAdapter, searchIndexAdapter] = await Promise.all([
       createAdapter(`${prefix}-store`),
       createAdapter(`${prefix}-follow-graph`),
+      createAdapter(`${prefix}-block-graph`),
       createAdapter(`${prefix}-peak-graph`),
       createAdapter(`${prefix}-search-index`),
     ]);
-    return { storeAdapter, followGraphAdapter, peakGraphAdapter, searchIndexAdapter };
+    return { storeAdapter, followGraphAdapter, blockGraphAdapter, peakGraphAdapter, searchIndexAdapter };
   } catch (err) {
     console.warn("[helix] PolyPack persistence unavailable; using in-memory graphs", err);
     return {};
