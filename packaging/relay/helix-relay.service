@@ -1,0 +1,30 @@
+[Unit]
+Description=Helix DHT rendezvous + circuit-relay anchor
+Documentation=https://github.com/helix-project/helix
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=helix-relay
+Group=helix-relay
+EnvironmentFile=/etc/helix-relay/helix-relay.env
+ExecStart=/usr/bin/node /opt/helix-relay/helix-relay.cjs
+WorkingDirectory=/var/lib/helix-relay
+Restart=on-failure
+RestartSec=5
+
+# Hardening - this process only ever needs network access and its own data dir.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/helix-relay
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+[Install]
+WantedBy=multi-user.target

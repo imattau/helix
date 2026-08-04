@@ -7,6 +7,8 @@
   "scripts": {
     "peer:a": "tsx src/cli/peer.ts --name alice --port 9001",
     "peer:b": "tsx src/cli/peer.ts --name bob --port 9002",
+    "relay": "tsx src/cli/relay.ts",
+    "build:relay": "esbuild src/cli/relay.ts --bundle --platform=node --format=cjs --outfile=dist/helix-relay.cjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
@@ -47,6 +49,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.10.5",
+    "esbuild": "^0.28.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"

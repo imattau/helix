@@ -1,0 +1,48 @@
+name: Build Relay
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-relay:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      # src/cli/relay.ts only depends on the backend (src/), not app/ - no frontend
+      # install needed here, unlike build-desktop.yml/build-android.yml/build-ios.yml.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      # Bundles src/cli/relay.ts (and every backend dependency it pulls in - libp2p,
+      # kad-dht, circuit-relay-v2, etc.) into a single dist/helix-relay.cjs so the
+      # release artifacts don't need to ship node_modules - see packaging/relay/.
+      - name: Build relay bundle
+        run: npm run build:relay
+
+      - name: Build tarball release
+        run: packaging/relay/build-tarball.sh
+
+      - name: Build .deb package
+        run: packaging/relay/build-deb.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: helix-relay-linux
+          path: |
+            dist/helix-relay-*-linux.tar.gz
+            dist/helix-relay_*_all.deb
+          if-no-files-found: error

@@ -113,6 +113,13 @@ export async function createHelixNode(opts: {
    *  NAT'd node offering to relay for others is pointless, since nothing could dial
    *  *it* either. Ignored unless `publicDiscovery` is also set. Opt-in; off by default. */
   relayServer?: boolean;
+  /** Public-facing multiaddrs to announce instead of relying on auto-detected/observed
+   *  ones - for a relayServer node running behind a reverse proxy (see src/cli/relay.ts's
+   *  `--proxy`), where the address peers must actually dial (the proxy's public
+   *  hostname) is never the same as this process's own listen address, so there's
+   *  nothing for libp2p to correctly auto-detect here. Merged into libp2p's own
+   *  `addresses.announce`, additive to (not replacing) the real listen addresses. */
+  announceAddresses?: string[];
 }) {
   // Split into two full calls (rather than one config with conditionally-spread
   // service keys) because kad-dht declares `ping` as a *required* component
@@ -163,7 +170,8 @@ export async function createHelixNode(opts: {
   // gets its own independently OS-assigned port in that case, rather than colliding on
   // a fixed +1 offset that only makes sense for the CLI's explicit port numbers.
   const wsPort = opts.port === 0 ? 0 : opts.port + 1;
-  const addresses = { listen: [`/ip4/0.0.0.0/tcp/${opts.port}`, `/ip4/0.0.0.0/tcp/${wsPort}/ws`] };
+  const announce = opts.announceAddresses !== undefined ? { announce: opts.announceAddresses } : {};
+  const addresses = { listen: [`/ip4/0.0.0.0/tcp/${opts.port}`, `/ip4/0.0.0.0/tcp/${wsPort}/ws`], ...announce };
   if (opts.publicDiscovery) {
     // Split on relayServer for the same reason the browser/publicDiscovery split above
     // exists (see the comment on createHelixNode's call site history): a conditionally-
@@ -198,7 +206,7 @@ export async function createHelixNode(opts: {
     // branch above, where this was confirmed against the live public network.
     return createLibp2p({
       privateKey: opts.privateKey,
-      addresses: { listen: [...addresses.listen, '/p2p-circuit'] },
+      addresses: { ...addresses, listen: [...addresses.listen, '/p2p-circuit'] },
       transports: [tcp(), webSockets(), circuitRelayTransport()],
       streamMuxers: [yamux()],
       connectionEncrypters: [noise()],

@@ -1,0 +1,10 @@
+#!/bin/sh
+set -e
+
+if command -v deb-systemd-invoke >/dev/null 2>&1; then
+  deb-systemd-invoke stop helix-relay.service >/dev/null || true
+else
+  systemctl stop helix-relay.service >/dev/null 2>&1 || true
+fi
+
+exit 0

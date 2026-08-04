@@ -1,0 +1,13 @@
+Package: helix-relay
+Version: __VERSION__
+Section: net
+Priority: optional
+Architecture: all
+Depends: nodejs (>= 18)
+Maintainer: Helix Project <noreply@example.com>
+Description: Helix DHT rendezvous + circuit-relay anchor
+ A standalone, always-on libp2p node that lets NAT'd Helix peers get a
+ circuit-relay-v2 reservation (so strangers can dial them) and lets any Helix
+ peer find the network via the public DHT without needing its own bootstrap
+ peer. Ships no user-facing functionality of its own - pure network
+ infrastructure.

@@ -1,0 +1,25 @@
+#!/bin/sh
+set -e
+
+SERVICE_USER=helix-relay
+DATA_DIR=/var/lib/helix-relay
+
+if ! id "$SERVICE_USER" >/dev/null 2>&1; then
+  useradd --system --no-create-home --shell /usr/sbin/nologin "$SERVICE_USER"
+fi
+
+install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 750 "$DATA_DIR"
+chown root:"$SERVICE_USER" /etc/helix-relay/helix-relay.env 2>/dev/null || true
+chmod 640 /etc/helix-relay/helix-relay.env 2>/dev/null || true
+
+if command -v deb-systemd-helper >/dev/null 2>&1; then
+  deb-systemd-helper unmask helix-relay.service >/dev/null || true
+  deb-systemd-helper enable helix-relay.service >/dev/null || true
+else
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  systemctl enable helix-relay.service >/dev/null 2>&1 || true
+fi
+
+echo "helix-relay installed. Edit /etc/helix-relay/helix-relay.env, then: systemctl start helix-relay"
+
+exit 0

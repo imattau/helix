@@ -1,0 +1,23 @@
+#!/bin/sh
+set -e
+
+if command -v deb-systemd-helper >/dev/null 2>&1; then
+  deb-systemd-helper purge helix-relay.service >/dev/null || true
+  deb-systemd-helper unmask helix-relay.service >/dev/null || true
+fi
+
+case "$1" in
+  purge)
+    # Data holds this relay's identity key - only removed on explicit purge, never
+    # on a plain remove/upgrade.
+    rm -rf /var/lib/helix-relay
+    if id helix-relay >/dev/null 2>&1; then
+      userdel helix-relay >/dev/null 2>&1 || true
+    fi
+    ;;
+  remove)
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    ;;
+esac
+
+exit 0
