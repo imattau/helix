@@ -41,6 +41,21 @@ body {
   color: var(--color-ink);
   font-family: var(--font-sans);
   margin: 0;
+  /* Android 15+ enforces edge-to-edge display by default in recent Tauri releases
+   * (confirmed: this project is on @tauri-apps/cli 2.11.4, past the 2.8 release where
+   * that became the default - see tauri-apps/tauri#12182) and Android 16+ can no
+   * longer opt out of it at all - the webview draws content behind the status bar/
+   * camera cutout and nav bar unless it's padded for here. Also covers iOS's notch/
+   * home-indicator for free, since it needs the same insets. Requires
+   * viewport-fit=cover on the viewport meta tag (index.html) - without it these
+   * env() values report 0 instead of the real inset. One fix at the true document
+   * root rather than per-screen, since every screen (ScreenFrame-based or not, see
+   * git history) renders as its descendant.
+   */
+  padding-top: env(safe-area-inset-top);
+  padding-right: env(safe-area-inset-right);
+  padding-bottom: env(safe-area-inset-bottom);
+  padding-left: env(safe-area-inset-left);
 }
 
 * {
