@@ -52,6 +52,12 @@ export class FollowGraph {
     this.flushSoon();
   }
 
+  /** Idempotent - removing an edge that isn't there is a no-op. The genome nodes stay. */
+  removeFollow(followerGenome: string, followeeGenome: string): void {
+    this.graph.removeEdges(followerGenome, EDGE.FOLLOWS, followeeGenome);
+    this.flushSoon();
+  }
+
   /** Who `genome` follows. */
   getFollowing(genome: string): string[] {
     return this.graph.getEdgeTargets(genome, EDGE.FOLLOWS);

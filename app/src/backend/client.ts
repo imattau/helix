@@ -8,7 +8,7 @@ import { HybridLogicalClock } from "@helix/clock/hlc.js";
 import { registerUser, genomeProofInput } from "@helix/api/registerUser.js";
 import { createPost as createPostApi, SpamRejectedError } from "@helix/api/createPost.js";
 import { ingestPost, PostRejectedError } from "@helix/api/ingestPost.js";
-import { followUser } from "@helix/api/follow.js";
+import { followUser, unfollowUser } from "@helix/api/follow.js";
 import {
   fetchAndVerifyAttachment,
   fetchAndVerifyAttachmentFromIpfs,
@@ -16,7 +16,23 @@ import {
   toDataUrl,
 } from "@helix/api/attachment.js";
 import { TOPICS } from "@helix/node/pubsubTopics.js";
-import { decodeGenesis, decodePost, decodeFollow, decodeIpfsAddr } from "@helix/node/messages.js";
+import {
+  decodeGenesis,
+  decodePost,
+  decodeFollow,
+  decodeIpfsAddr,
+} from "@helix/node/messages.js";
+import {
+  buildDirectorySnapshot,
+  decodeDirectory,
+  encodeDirectory,
+  ingestDirectory,
+  registerDirectoryHandler,
+  requestDirectory,
+  DIRECTORY_BROADCAST_INTERVAL_MS,
+  DIRECTORY_BROADCAST_MAX_GENOMES,
+  DIRECTORY_BROADCAST_POSTS_PER_GENOME,
+} from "@helix/node/directory.js";
 import { verifyProofOfWork, REGISTRATION_DIFFICULTY_BITS } from "@helix/crypto/pow.js";
 import { fromHex } from "@helix/crypto/hex.js";
 import type { Attachment, Genome, Helix, Follow } from "@helix/types/index.js";
@@ -27,8 +43,8 @@ import type { Notification, Post, PostAttachment, User } from "../types";
 
 export { SpamRejectedError };
 
-/** Local dev default: `npm run peer:a` at the repo root logs this exact /ws multiaddr. */
-const DEFAULT_BOOTSTRAP = "/ip4/127.0.0.1/tcp/9002/ws";
+/** How often to re-run DHT rendezvous discovery so peers that announce later are found. */
+const REDISCOVERY_INTERVAL_MS = 3 * 60_000;
 
 const AVATAR_PALETTE = ["#5e50f9", "#6366f1", "#d946ef", "#f59e0b", "#22c55e", "#ec4899", "#0ea5e9"];
 
@@ -117,6 +133,12 @@ export class HelixClient {
   private dialedIpfsPeers = new Set<string>();
   /** Verified attachment bytes by hashHex, so the feed and thread views never refetch. */
   private attachmentCache = new Map<string, Uint8Array>();
+  /** Peers we've already asked for their directory - one request per peer, ever. */
+  private directoryRequestedPeers = new Set<string>();
+  /** True once we've made connection with any peer - drives the "Finding peers…" state. */
+  private peerContact = false;
+  /** Captured at connect() time - the node's service set is fixed at construction. */
+  private publicDiscoveryEnabled = false;
 
   /** Bumped on every state change - lets useSyncExternalStore detect updates. */
   getVersion(): number {
@@ -158,6 +180,7 @@ export class HelixClient {
     this.searchIndex = new SearchIndex(adapters.searchIndexAdapter);
     await Promise.all([this.store.loadPersistentGraphs(), this.searchIndex.load()]);
     const publicDiscovery = isPublicDiscoveryEnabled();
+    this.publicDiscoveryEnabled = publicDiscovery;
     this.node = await createHelixNode({ port: 0, privateKey: identity.privateKey, browser: true, publicDiscovery });
     this.hlc = new HybridLogicalClock(this.node.peerId.toString());
 
@@ -165,27 +188,55 @@ export class HelixClient {
     this.node.services.pubsub.subscribe(TOPICS.POSTS);
     this.node.services.pubsub.subscribe(TOPICS.FOLLOWS);
     this.node.services.pubsub.subscribe(TOPICS.IPFS_ADDR);
+    this.node.services.pubsub.subscribe(TOPICS.DIRECTORY);
     this.node.services.pubsub.addEventListener("message", (evt) => this.handleMessage(evt));
+    registerDirectoryHandler(this.node, this.store);
 
-    const bootstrap = import.meta.env.VITE_BOOTSTRAP_MULTIADDR ?? DEFAULT_BOOTSTRAP;
-    try {
-      await this.node.dial(multiaddr(bootstrap), { signal: AbortSignal.timeout(15_000) });
-    } catch (err) {
-      console.warn(`[helix] couldn't dial bootstrap peer ${bootstrap} - continuing standalone`, err);
+    // Ask every peer we connect to (bootstrap or DHT-discovered) for its directory
+    // exactly once - a fresh user's Discover is populated by this, not by waiting for
+    // whatever happens to be broadcast while they're online.
+    this.node.addEventListener("peer:connect", (evt) => {
+      const peerId = evt.detail.toString();
+      this.peerContact = true;
+      this.notify();
+      if (this.directoryRequestedPeers.has(peerId)) return;
+      this.directoryRequestedPeers.add(peerId);
+      this.requestDirectoryFrom(peerId).catch((err) => {
+        this.directoryRequestedPeers.delete(peerId);
+        console.warn(`[helix] [DIRECTORY] request to ${peerId} failed: ${err instanceof Error ? err.message : err}`);
+      });
+    });
+
+    const bootstrap = import.meta.env.VITE_BOOTSTRAP_MULTIADDR;
+    if (bootstrap) {
+      try {
+        await this.node.dial(multiaddr(bootstrap), { signal: AbortSignal.timeout(15_000) });
+      } catch (err) {
+        console.warn(`[helix] couldn't dial bootstrap peer ${bootstrap} - continuing standalone`, err);
+      }
     }
 
     // Best-effort: find other Helix peers via the public IPFS/libp2p DHT (client-mode
-    // only - see createNode.ts), beyond the single hardcoded bootstrap above. A browser
-    // tab can't accept inbound connections at all, so this can only ever dial *into*
-    // publicly-reachable Helix nodes (e.g. another peer:a/peer:b-style deployment) -
-    // same one-directional constraint the hardcoded bootstrap already has. Doesn't
-    // block startup on it - fires and forgets, since the public DHT can be slow.
-    // User-controlled - see identity.ts's isPublicDiscoveryEnabled()/SettingsScreen.
+    // only - see createNode.ts), beyond a hardcoded bootstrap. A browser tab can't
+    // accept inbound connections at all, so this can only ever dial *into*
+    // publicly-reachable Helix nodes (e.g. another peer:a/peer:b-style deployment).
+    // Doesn't block startup on it - fires and forgets, since the public DHT can be
+    // slow. User-controlled - see identity.ts's isPublicDiscoveryEnabled()/SettingsScreen.
     if (publicDiscovery) {
-      connectPublicDiscovery(this.node).catch((err) => {
-        console.warn(`[helix] DHT rendezvous discovery failed - continuing without it`, err);
-      });
+      this.discoverAndSync().catch(() => {});
+      // Keep finding peers as they announce - the one-shot at startup misses anyone
+      // that comes online later, and the public DHT is slow on a cold start.
+      setInterval(() => {
+        if (!this.publicDiscoveryEnabled) return;
+        this.discoverAndSync().catch((err) => {
+          console.warn(`[helix] DHT rendezvous rediscovery failed - continuing without it`, err);
+        });
+      }, REDISCOVERY_INTERVAL_MS);
     }
+
+    // Passive directory propagation: re-announce a capped snapshot on the
+    // `helix-directory` topic so peers that connect to *us* don't need a request.
+    setInterval(() => this.broadcastDirectory(), DIRECTORY_BROADCAST_INTERVAL_MS);
   }
 
   /** Registers under `displayName` once connect() has finished, then creates the
@@ -222,7 +273,11 @@ export class HelixClient {
       const follow = decodeFollow(evt.detail.data);
       if (!this.store.hasGenome(follow.followerGenome) || !this.store.hasGenome(follow.followeeGenome)) return;
       this.hlc.update(follow.hlcTimestamp);
-      this.store.getFollowGraph().addFollow(follow.followerGenome, follow.followeeGenome);
+      if (follow.action === "unfollow") {
+        this.store.getFollowGraph().removeFollow(follow.followerGenome, follow.followeeGenome);
+      } else {
+        this.store.getFollowGraph().addFollow(follow.followerGenome, follow.followeeGenome);
+      }
       this.followEvents.push(follow);
       this.notify();
     } else if (evt.detail.topic === TOPICS.POSTS) {
@@ -241,7 +296,50 @@ export class HelixClient {
       this.notify();
     } else if (evt.detail.topic === TOPICS.IPFS_ADDR) {
       this.dialIpfsPeer(decodeIpfsAddr(evt.detail.data));
+    } else if (evt.detail.topic === TOPICS.DIRECTORY) {
+      try {
+        const snapshot = decodeDirectory(evt.detail.data);
+        const { genomesAccepted, postsAccepted } = ingestDirectory(this.store, snapshot);
+        if (genomesAccepted > 0 || postsAccepted > 0) this.notify();
+      } catch (err) {
+        console.warn("[helix] [DIRECTORY] rejected message", err instanceof Error ? err.message : err);
+      }
     }
+  }
+
+  /** Asks one connected peer for its directory and verifies/saves every entry locally.
+   *  Everything is validated on receipt (PoW for genomes, ingestPost for posts) - a
+   *  malicious peer can only waste a little local CPU, never inject unverified data. */
+  private async requestDirectoryFrom(peerId: string): Promise<void> {
+    const snapshot = await requestDirectory(this.node, peerId, {}, AbortSignal.timeout(15_000));
+    const { genomesAccepted, postsAccepted } = ingestDirectory(this.store, snapshot);
+    if (genomesAccepted > 0 || postsAccepted > 0) {
+      console.log(`[helix] [DIRECTORY] synced ${genomesAccepted} genomes / ${postsAccepted} posts from ${peerId}`);
+    }
+    this.notify();
+  }
+
+  /** Dial into the public DHT, rendezvous to find Helix peers, and dial them - each
+   *  dial fires `peer:connect`, which triggers the directory request. Best-effort;
+   *  fire-and-forget at the call site so a slow DHT cold start never blocks the UI. */
+  private async discoverAndSync(): Promise<void> {
+    await connectPublicDiscovery(this.node);
+    this.notify();
+  }
+
+  /** Passive directory announcement on the `helix-directory` topic. Capped well below
+   *  a full response since it reaches every peer in the mesh. */
+  private broadcastDirectory(): void {
+    const snapshot = buildDirectorySnapshot(this.store, {
+      limit: DIRECTORY_BROADCAST_MAX_GENOMES,
+      recentPostsPerGenome: DIRECTORY_BROADCAST_POSTS_PER_GENOME,
+    });
+    if (snapshot.entries.length === 0) return;
+    void this.node.services.pubsub
+      .publish(TOPICS.DIRECTORY, encodeDirectory(snapshot))
+      .catch((err) => {
+        console.warn("[helix] [DIRECTORY] broadcast failed", err instanceof Error ? err.message : err);
+      });
   }
 
   /** Mirrors the CLI's IPFS rendezvous (src/cli/peer.ts): a peer announces its separate
@@ -352,6 +450,74 @@ export class HelixClient {
     return this.store.getFollowGraph().getFollowing(this.selfGenome.genome).includes(genome);
   }
 
+  /** True once this peer has made connection with any other peer - a fresh user whose
+   *  Discover/feed is still empty can be told "still finding peers…" instead of "nothing
+   *  exists." */
+  get hasNetworkContact(): boolean {
+    return this.peerContact;
+  }
+
+  /** How many genomes this peer has observed (live gossip + directory sync). */
+  getKnownGenomeCount(): number {
+    return this.store.getKnownGenomes().length;
+  }
+
+  /**
+   * "People you might want to follow": the existing 2nd-degree followers-of-followers
+   * query first, then every other known genome the user doesn't follow yet, ranked by
+   * most recent activity. Pure local derivation from the store - see the plan for why
+   * the DHT finds peers, not users, so directory data (via getKnownGenomes) is what
+   * makes this useful to a brand-new user.
+   */
+  getSuggestedUsers(limit = 20): User[] {
+    if (!this.selfGenome) return [];
+    const self = this.selfGenome.genome;
+    const graph = this.store.getFollowGraph();
+    const followed = new Set(graph.getFollowing(self));
+    const suggested = new Set<string>(graph.getFollowersOfFollowers(self));
+
+    for (const genome of this.store.getKnownGenomes()) {
+      if (genome.genome === self || followed.has(genome.genome)) continue;
+      suggested.add(genome.genome);
+    }
+
+    const latestActivity = (genome: string): number => {
+      let max = 0;
+      for (const post of this.store.getPostsByGenome(genome)) {
+        max = Math.max(max, post.hlcTimestamp.physical);
+      }
+      return max;
+    };
+
+    return [...suggested]
+      .sort((a, b) => latestActivity(b) - latestActivity(a))
+      .slice(0, limit)
+      .map((genome) => this.getUser(genome))
+      .filter((u): u is User => u !== undefined);
+  }
+
+  /** Recent top-level posts from people the user doesn't follow yet - the content half
+   *  of the Discover section. */
+  getDiscoverFeed(limit = 20): Post[] {
+    if (!this.selfGenome) return [];
+    const self = this.selfGenome.genome;
+    const followed = new Set(this.store.getFollowGraph().getFollowing(self));
+    const posts = this.store
+      .getAllPosts()
+      .filter((p) => p.kind === "post" && !p.parentPostId && this.isCurrent(p) && p.genome !== self && !followed.has(p.genome));
+    return this.sortNewestFirst(posts)
+      .slice(0, limit)
+      .map((p) => this.toPost(p));
+  }
+
+  /** Re-runs DHT rendezvous discovery + dials any newly-found peers (whose directories
+   *  are then requested via peer:connect) - turns the startup one-shot into an on-demand
+   *  refresh from the Discover screen. */
+  async requestDirectoryRefresh(): Promise<void> {
+    if (!this.publicDiscoveryEnabled) return;
+    await this.discoverAndSync();
+  }
+
   /** Attachment to attach to a new post. `ipfsCid` is opt-in: if the caller already
    *  published to their own IPFS node (see getIpfsNode), it travels with the post and
    *  lets bitswap peers fetch the bytes; the data: URL is always the reliable path. */
@@ -445,6 +611,13 @@ export class HelixClient {
     if (!this.selfGenome) throw new Error("HelixClient.follow: not registered yet");
     const follow = await followUser(this.node, this.store, this.hlc, this.selfGenome.genome, genome);
     this.followEvents.push(follow);
+    this.notify();
+  }
+
+  async unfollow(genome: string): Promise<void> {
+    if (!this.selfGenome) throw new Error("HelixClient.unfollow: not registered yet");
+    const unfollow = await unfollowUser(this.node, this.store, this.hlc, this.selfGenome.genome, genome);
+    this.followEvents.push(unfollow);
     this.notify();
   }
 
@@ -559,7 +732,7 @@ export class HelixClient {
     }
 
     for (const f of this.followEvents) {
-      if (f.followeeGenome === selfGenome && f.followerGenome !== selfGenome) {
+      if (f.followeeGenome === selfGenome && f.followerGenome !== selfGenome && f.action === "follow") {
         items.push({ kind: "follow", actorGenome: f.followerGenome, hlcTimestamp: f.hlcTimestamp });
       }
     }

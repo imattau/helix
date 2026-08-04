@@ -4,7 +4,7 @@ import { generateHelixIdentity } from '../../src/crypto/keys.js';
 import { createHelixNode, type HelixNode } from '../../src/node/createNode.js';
 import { MemoryStore } from '../../src/store/memoryStore.js';
 import { registerUser, genomeProofInput } from '../../src/api/registerUser.js';
-import { followUser } from '../../src/api/follow.js';
+import { followUser, unfollowUser } from '../../src/api/follow.js';
 import { HybridLogicalClock } from '../../src/clock/hlc.js';
 import { verifyProofOfWork, REGISTRATION_DIFFICULTY_BITS } from '../../src/crypto/pow.js';
 import { decodeGenesis, decodeFollow, encodeFollow } from '../../src/node/messages.js';
@@ -39,7 +39,11 @@ function wireReceiver(node: HelixNode, store: HelixStore, rejected: { genesis: n
         rejected.follow++;
         return;
       }
-      store.getFollowGraph().addFollow(follow.followerGenome, follow.followeeGenome);
+      if (follow.action === 'unfollow') {
+        store.getFollowGraph().removeFollow(follow.followerGenome, follow.followeeGenome);
+      } else {
+        store.getFollowGraph().addFollow(follow.followerGenome, follow.followeeGenome);
+      }
     }
   });
 }
@@ -169,11 +173,81 @@ describe('four-peer follow graph over libp2p', () => {
         followerGenome: 'TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT',
         followeeGenome: aliceGenome.genome,
         hlcTimestamp: { physical: Date.now(), logical: 0, peerId: 'attacker' },
+        action: 'follow',
       }),
     );
     await waitFor(() => bobRejected.follow > 0 && carolRejected.follow > 0 && charlieRejected.follow > 0);
     expect(bobStore.getFollowGraph().getFollowers(aliceGenome.genome)).toEqual([bobGenome.genome]);
     expect(carolStore.getFollowGraph().getFollowers(aliceGenome.genome)).toEqual([bobGenome.genome]);
     expect(charlieStore.getFollowGraph().getFollowers(aliceGenome.genome)).toEqual([bobGenome.genome]);
+  });
+
+  it('propagates unfollows so every peer independently mirrors the removal', async () => {
+    const aliceStore = new MemoryStore();
+    const bobStore = new MemoryStore();
+    const carolStore = new MemoryStore();
+    const charlieStore = new MemoryStore();
+    const aliceRejected = { genesis: 0, follow: 0 };
+    const bobRejected = { genesis: 0, follow: 0 };
+    const carolRejected = { genesis: 0, follow: 0 };
+    const charlieRejected = { genesis: 0, follow: 0 };
+
+    wireReceiver(alice, aliceStore, aliceRejected);
+    wireReceiver(bob, bobStore, bobRejected);
+    wireReceiver(carol, carolStore, carolRejected);
+    wireReceiver(charlie, charlieStore, charlieRejected);
+
+    await waitFor(() => alice.services.pubsub.getSubscribers(TOPICS.GENESIS).length >= 3);
+    await waitFor(() => alice.services.pubsub.getSubscribers(TOPICS.FOLLOWS).length >= 3);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    const { genome: aliceGenome } = await registerUser(alice, aliceStore, 'alice');
+    await waitFor(
+      () =>
+        bobStore.hasGenome(aliceGenome.genome) &&
+        carolStore.hasGenome(aliceGenome.genome) &&
+        charlieStore.hasGenome(aliceGenome.genome),
+    );
+    const { genome: bobGenome } = await registerUser(bob, bobStore, 'bob');
+    await waitFor(
+      () =>
+        aliceStore.hasGenome(bobGenome.genome) &&
+        carolStore.hasGenome(bobGenome.genome) &&
+        charlieStore.hasGenome(bobGenome.genome),
+    );
+
+    await followUser(bob, bobStore, new HybridLogicalClock(bob.peerId.toString()), bobGenome.genome, aliceGenome.genome);
+    await waitFor(
+      () =>
+        aliceStore.getFollowGraph().getFollowers(aliceGenome.genome).length === 1 &&
+        carolStore.getFollowGraph().getFollowers(aliceGenome.genome).length === 1 &&
+        charlieStore.getFollowGraph().getFollowers(aliceGenome.genome).length === 1,
+    );
+
+    await unfollowUser(bob, bobStore, new HybridLogicalClock(bob.peerId.toString()), bobGenome.genome, aliceGenome.genome);
+    await waitFor(
+      () =>
+        aliceStore.getFollowGraph().getFollowers(aliceGenome.genome).length === 0 &&
+        carolStore.getFollowGraph().getFollowers(aliceGenome.genome).length === 0 &&
+        charlieStore.getFollowGraph().getFollowers(aliceGenome.genome).length === 0,
+    );
+
+    for (const store of [aliceStore, bobStore, carolStore, charlieStore]) {
+      expect(store.getFollowGraph().getFollowers(aliceGenome.genome)).toEqual([]);
+      expect(store.getFollowGraph().getFollowing(bobGenome.genome)).toEqual([]);
+    }
+
+    // an unfollow referencing an unregistered genome must be rejected by every receiver
+    await alice.services.pubsub.publish(
+      TOPICS.FOLLOWS,
+      encodeFollow({
+        followerGenome: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+        followeeGenome: aliceGenome.genome,
+        hlcTimestamp: { physical: Date.now(), logical: 0, peerId: 'attacker' },
+        action: 'unfollow',
+      }),
+    );
+    await waitFor(() => bobRejected.follow > 0 && carolRejected.follow > 0 && charlieRejected.follow > 0);
+    expect(bobStore.getFollowGraph().getFollowers(aliceGenome.genome)).toEqual([]);
   });
 });

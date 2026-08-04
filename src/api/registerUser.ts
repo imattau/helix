@@ -1,7 +1,7 @@
 import { to_base4, from_base4 } from '../math/base4.js';
 import { derive_subkey } from '../crypto/keys.js';
-import { toHex } from '../crypto/hex.js';
-import { findProofOfWork, REGISTRATION_DIFFICULTY_BITS } from '../crypto/pow.js';
+import { toHex, fromHex } from '../crypto/hex.js';
+import { findProofOfWork, verifyProofOfWork, REGISTRATION_DIFFICULTY_BITS } from '../crypto/pow.js';
 import { TOPICS } from '../node/pubsubTopics.js';
 import { encodeGenesis } from '../node/messages.js';
 import type { HelixNode } from '../node/createNode.js';
@@ -20,6 +20,28 @@ export function genomeProofInput(publicKeyBytes: Uint8Array, genome: string): Ui
   out.set(publicKeyBytes, 0);
   out.set(genomeBytes, publicKeyBytes.length);
   return out;
+}
+
+/**
+ * Receiver-side genome validation: recompute the registration proof-of-work over the
+ * claimed public key and genome string, exactly as the genesis receive handlers do.
+ * Never trust a sender's claim - a genome only enters the store after this passes.
+ * Malformed records (bad hex, missing fields) are simply rejected, not thrown.
+ */
+export function verifyGenome(genome: Genome): boolean {
+  try {
+    const proofInput = genomeProofInput(fromHex(genome.publicKeyHex), genome.genome);
+    return verifyProofOfWork(proofInput, genome.powNonce, REGISTRATION_DIFFICULTY_BITS);
+  } catch {
+    return false;
+  }
+}
+
+/** Verifies a genome and, if valid, persists it. Returns whether it was accepted. */
+export function acceptVerifiedGenome(store: HelixStore, genome: Genome): boolean {
+  if (!verifyGenome(genome)) return false;
+  store.saveGenome(genome);
+  return true;
 }
 
 /**

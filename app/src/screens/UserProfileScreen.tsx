@@ -63,9 +63,10 @@ export function UserProfileScreen({
             {!isSelf && (
               <button
                 type="button"
-                onClick={() => client.follow(user.id)}
-                disabled={isFollowing}
-                className="rounded-[20px] bg-accent px-[18px] py-2 text-[13px] font-bold text-white disabled:opacity-60"
+                onClick={() => (isFollowing ? client.unfollow(user.id) : client.follow(user.id))}
+                className={`rounded-[20px] px-[18px] py-2 text-[13px] font-bold ${
+                  isFollowing ? "border border-border text-ink" : "bg-accent text-white"
+                }`}
               >
                 {isFollowing ? "Following" : "Follow"}
               </button>

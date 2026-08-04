@@ -59,6 +59,9 @@ export interface HelixStore {
   saveGenome(genome: Genome): void;
   getGenome(genomeAddress: string): Genome | undefined;
   hasGenome(genomeAddress: string): boolean;
+  /** Every genome this store has observed (via genesis or directory sync) - used to
+   *  serve directory snapshots and to build discovery suggestions. */
+  getKnownGenomes(): Genome[];
   getOpenTad(genomeAddress: string): TAD | undefined;
   createTad(genomeAddress: string): TAD;
   getPost(postId: string): Helix | undefined;
@@ -135,6 +138,10 @@ export class MemoryStore implements HelixStore {
 
   hasGenome(genomeAddress: string): boolean {
     return this.graph.getNode(`${ID_PREFIX_GENOME}${genomeAddress}`) !== undefined;
+  }
+
+  getKnownGenomes(): Genome[] {
+    return this.graph.whereType(NODE_TYPE_GENOME).map((n) => n.data as unknown as Genome);
   }
 
   getOpenTad(genomeAddress: string): TAD | undefined {

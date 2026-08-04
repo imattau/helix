@@ -41,6 +41,8 @@ export function PostCard({
   onOpenAuthor?: (userId: string) => void;
 }) {
   const client = useHelixState();
+  const isSelfAuthor = post.author.id === client.selfGenomeAddress;
+  const isFollowing = client.isFollowing(post.author.id);
 
   return (
     <div className="w-full rounded-2xl border border-border bg-surface p-4 flex flex-col gap-3">
@@ -62,7 +64,20 @@ export function PostCard({
             </span>
           </div>
         </button>
-        {showSealedBadge && post.sealed && <SealedBadge />}
+        <div className="flex items-center gap-2">
+          {!isSelfAuthor && (
+            <button
+              type="button"
+              onClick={() => (isFollowing ? client.unfollow(post.author.id) : client.follow(post.author.id))}
+              className={`rounded-full border px-3 py-1 text-xs font-bold ${
+                isFollowing ? "border-border text-ink-muted" : "border-accent text-accent"
+              }`}
+            >
+              {isFollowing ? "Following" : "Follow"}
+            </button>
+          )}
+          {showSealedBadge && post.sealed && <SealedBadge />}
+        </div>
       </div>
 
       <button type="button" className="w-full text-left" onClick={() => onOpen?.(post.id)}>

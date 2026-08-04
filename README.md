@@ -45,7 +45,36 @@ in the original design.
   (unlike the earlier non-fits identified for polypack's vector search / sync layer).
   Follow edges broadcast over a new `helix-follows` gossipsub topic; every receiver
   verifies both referenced genomes are known before mirroring the edge, same as every
-  other "recompute, don't trust" check in this codebase.
+  other "recompute, don't trust" check in this codebase. **Unfollow** is the same wire
+  message with `action: 'unfollow'` — `FollowGraph.removeFollow` drops the edge locally
+  and every receiver mirrors the removal (idempotent, backward-compatible decode
+  defaults to `'follow'`). The app surfaces both on post cards (inline follow/unfollow
+  in the author row) and on profiles.
+- **Directory sync** (`src/node/directory.ts`): a way for a peer to learn the rest of
+  the network's users beyond live gossip. Two complementary mechanisms share one
+  payload (`{ genome, recentPosts }`, up to 500 genomes × 20 posts for a request,
+  capped to 100 × 5 for broadcasts): a **request-response** libp2p protocol
+  `/helix/directory/1.0.0` (each newly-connected peer is asked exactly once) and a
+  **periodic `helix-directory` gossipsub broadcast**. Every entry is independently
+  validated on receipt — PoW for genomes, the full `ingestPost` invariant set for
+  posts — so a malicious responder can only waste local CPU, never inject unverified
+  data. This is what makes a brand-new user's Discover section non-empty: one exchange
+  with any populated peer seeds hundreds of genomes plus their recent posts. The DHT
+  still finds *peers*, not users; directory data is what turns "peers found" into
+  "people you can follow."
+- **Public-DHT default bootstrap** (`app/src/backend/client.ts`): the app joins the
+  public IPFS/libp2p DHT by default (client-mode `@libp2p/kad-dht` + the four official
+  `bootstrap.libp2p.io` WebSocket peers — see `src/node/createNode.ts`), finds other
+  Helix peers via the fixed `helix-v1-rendezvous` CID, and requests their directories.
+  There is no localhost bootstrap default anymore; a specific peer is only dialed when
+  `VITE_BOOTSTRAP_MULTIADDR` is set (local dev / self-hosting). Discovery is repeated
+  on a timer so peers that announce later are found, and the app shows a
+  "Finding peers…" state until the first connection or directory data arrives.
+  Announcing is gated on the DHT routing table actually warming (`connectPublicDiscovery`
+  retries the flaky bootstrap dials and waits for ≥8 routing peers before `provide()` —
+  a cold-table provide silently no-ops, which was why announces originally never landed),
+  and `--public-discovery` CLI anchors re-announce every 30 min since provider records
+  expire.
 - **Media & long-form attachments** (`src/crypto/postHash.ts`, `src/api/attachment.ts`):
   posts can reference an `Attachment` (SHA-256 hash + MIME type + size + source URL)
   instead of cramming long-form content into the tweet-length `content` field. The
@@ -98,7 +127,14 @@ attachment, published both as a self-contained `data:` URL and to Alice's own IP
 node; Bob independently fetches and verifies it via **both** transports — generic URL
 fetch and real IPFS bitswap from Alice's separate Helia node — having never received
 the bytes over gossipsub either way. Bob also follows Alice once her genesis arrives;
-both peers print their mirrored follow-graph state at the end.
+both peers print their mirrored follow-graph state at the end. Each peer also serves
+`/helix/directory/1.0.0` requests and announces periodic directory snapshots, so either
+peer can bootstrap its knowledge of the network's users from the other on connect.
+
+The desktop app (in `app/`) has no localhost bootstrap default — it joins the public
+IPFS/libp2p DHT by default and finds Helix peers via the `helix-v1-rendezvous` CID. To
+point it at a local CLI peer for development, set `VITE_BOOTSTRAP_MULTIADDR` to that
+peer's `/ws` multiaddr before building/running.
 
 ## Tests
 

@@ -19,8 +19,13 @@ export function encodeFollow(follow: Follow): Uint8Array {
   return new TextEncoder().encode(JSON.stringify(follow));
 }
 
+/**
+ * Older broadcasts (before the `action` field) carry no action - treat them as
+ * 'follow' so pre-existing messages and stores stay compatible.
+ */
 export function decodeFollow(data: Uint8Array): Follow {
-  return JSON.parse(new TextDecoder().decode(data)) as Follow;
+  const wire = JSON.parse(new TextDecoder().decode(data)) as Partial<Follow> & Pick<Follow, 'followerGenome' | 'followeeGenome' | 'hlcTimestamp'>;
+  return { ...wire, action: wire.action ?? 'follow' } as Follow;
 }
 
 export interface IpfsAddrMessage {

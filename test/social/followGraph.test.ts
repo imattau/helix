@@ -21,6 +21,31 @@ describe('FollowGraph', () => {
     expect(graph.getFollowers('alice')).toEqual(['bob']);
   });
 
+  it('removes a follow edge on unfollow, and is idempotent too', () => {
+    const graph = new FollowGraph();
+    graph.addFollow('bob', 'alice');
+    graph.removeFollow('bob', 'alice');
+
+    expect(graph.getFollowing('bob')).toEqual([]);
+    expect(graph.getFollowers('alice')).toEqual([]);
+
+    // removing an edge that isn't there is a no-op, not a throw
+    graph.removeFollow('bob', 'alice');
+    graph.removeFollow('carol', 'alice');
+    expect(graph.getFollowers('alice')).toEqual([]);
+  });
+
+  it('removing one follow leaves other edges of the same follower intact', () => {
+    const graph = new FollowGraph();
+    graph.addFollow('bob', 'alice');
+    graph.addFollow('bob', 'dave');
+    graph.removeFollow('bob', 'alice');
+
+    expect(graph.getFollowing('bob')).toEqual(['dave']);
+    expect(graph.getFollowers('alice')).toEqual([]);
+    expect(graph.getFollowers('dave')).toEqual(['bob']);
+  });
+
   it('supports multiple followers and multiple followees', () => {
     const graph = new FollowGraph();
     graph.addFollow('bob', 'alice');

@@ -76,10 +76,14 @@ export interface TAD {
   mmrLeafIndex?: number;
 }
 
+export type FollowAction = 'follow' | 'unfollow';
+
 export interface Follow {
   followerGenome: string;
   followeeGenome: string;
   hlcTimestamp: HLCTimestamp;
+  /** 'unfollow' removes the edge on every receiver - see src/api/follow.ts. */
+  action: FollowAction;
 }
 
 export interface Spacer {
