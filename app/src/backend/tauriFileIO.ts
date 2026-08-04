@@ -2,8 +2,15 @@ import { readFile, writeFile, remove, exists, mkdir } from "@tauri-apps/plugin-f
 import { BaseDirectory } from "@tauri-apps/api/path";
 import type { FileIO } from "@0xx0lostcause0xx0/polypack/persistence";
 
+/** Tauri's IPC can reject a command with an Error, a plain string, or a serialized
+ *  object - read the message out of whatever shape it arrives as. */
 function isNotFound(err: unknown): boolean {
-  return err instanceof Error && /(no such file|not found|ENOENT|entity not found|os error 2)/i.test(err.message);
+  let message: string;
+  if (err instanceof Error) message = err.message;
+  else if (typeof err === "string") message = err;
+  else if (typeof err === "object" && err !== null && "message" in err) message = String((err as { message: unknown }).message);
+  else message = String(err);
+  return /(no such file|not found|ENOENT|entity not found|os error 2)/i.test(message);
 }
 
 /**
@@ -27,12 +34,12 @@ export class TauriFileIO implements FileIO {
   }
 
   async readFile(name: string): Promise<Uint8Array | null> {
-    try {
-      return await readFile(this.path(name), { baseDir: BaseDirectory.AppData });
-    } catch (err) {
-      if (isNotFound(err)) return null;
-      throw err;
-    }
+    // Probe first: `exists` returns false for a missing file (or missing parent
+    // directory) without throwing, whereas the plugin's readFile rejects - and a
+    // fresh install legitimately has no snapshot/WAL yet, so this must be a null,
+    // not an error (first-load ENOENT used to kill startup on Android).
+    if (!(await this.fileExists(name))) return null;
+    return readFile(this.path(name), { baseDir: BaseDirectory.AppData });
   }
 
   async writeFile(name: string, data: Uint8Array): Promise<void> {
