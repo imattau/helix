@@ -75,6 +75,19 @@ in the original design.
   a cold-table provide silently no-ops, which was why announces originally never landed),
   and `--public-discovery` CLI anchors re-announce every 30 min since provider records
   expire.
+- **NAT traversal** (`src/node/createNode.ts`): finding a peer via the DHT and actually
+  being reachable are different problems — most residential/office connections are
+  NAT'd with nothing forwarded, confirmed hands-on running this project's own DHT
+  rendezvous from a NAT'd dev machine: discovery worked, but nothing on the internet
+  could dial the node back, since its only listen addresses were private. `publicDiscovery`
+  now also wires in `@libp2p/circuit-relay-v2` (client transport + a bare `/p2p-circuit`
+  listen address, which is what actually triggers the reservation flow — just adding the
+  transport does nothing on its own), `@libp2p/autonat`, and `@libp2p/dcutr`, all pinned
+  to the same `@libp2p/interface` v2 line as `@libp2p/kad-dht` for the CVE reason above.
+  A NAT'd node gets a real, publicly-dialable `/p2p-circuit` address through any
+  HOP-capable relay it's connected to — confirmed live against the public network.
+  See "Running a relay anchor" below for the dedicated relay/rendezvous service that
+  makes this reliable rather than opportunistic.
 - **Media & long-form attachments** (`src/crypto/postHash.ts`, `src/api/attachment.ts`):
   posts can reference an `Attachment` (SHA-256 hash + MIME type + size + source URL)
   instead of cramming long-form content into the tweet-length `content` field. The
@@ -135,6 +148,62 @@ The desktop app (in `app/`) has no localhost bootstrap default — it joins the 
 IPFS/libp2p DHT by default and finds Helix peers via the `helix-v1-rendezvous` CID. To
 point it at a local CLI peer for development, set `VITE_BOOTSTRAP_MULTIADDR` to that
 peer's `/ws` multiaddr before building/running.
+
+## Running a relay anchor
+
+`src/cli/relay.ts` is a standalone daemon, separate from the `peer:a`/`peer:b` demo
+above (which has hardcoded alice/bob roles and a forged-genesis demonstration - neither
+applies to long-lived network infrastructure with no user or content of its own). It
+only ever runs the libp2p node: DHT rendezvous (see "Public-DHT default bootstrap") plus
+the circuit-relay-v2 **server** role (see "NAT traversal"), so NAT'd Helix peers can get
+a reservation through it and be dialed by strangers.
+
+```bash
+npm run relay -- --port 4001 --data-dir ./.helix-relay-data
+```
+
+Its identity key persists to `--data-dir` (`HELIX_RELAY_DATA_DIR` under systemd) across
+restarts — its PeerId is embedded in every `/p2p-circuit` address it has ever handed
+out, so losing it silently strands anyone relying on it.
+
+If this host sits behind a reverse proxy (nginx/Caddy/etc. terminating TLS on 443 and
+forwarding to the node's WebSocket listener - the standard way to expose a libp2p node
+without a raw public IP), pass its hostname so the relay announces the *proxy's*
+address instead of its own unreachable local one:
+
+```bash
+npm run relay -- --proxy relay.example.com
+```
+
+### Deploying as a systemd service (Linux)
+
+`.github/workflows/build-relay.yml` builds two release artifacts on every push (a
+bundled, dependency-free `dist/helix-relay.cjs` via esbuild, then packaged both ways):
+
+- **Tarball**: extract it and run `sudo ./install.sh` — creates a `helix-relay` system
+  user, installs to `/opt/helix-relay`, `/etc/helix-relay` (config), `/var/lib/helix-relay`
+  (identity/state), and the systemd unit.
+- **`.deb`**: `sudo dpkg -i helix-relay_*.deb` — same layout via proper
+  `postinst`/`prerm`/`postrm` and a conffile for the config.
+
+**Requires Node.js 22+** — confirmed by actually installing and running this on a fresh
+Ubuntu 24.04 VM: Ubuntu's own `apt` `nodejs` package (18.x) is missing the global
+`CustomEvent` libp2p's event-target usage needs, and even the latest Node 20.x is still
+missing `Promise.withResolvers`. Both `install.sh` and the `.deb`'s `Depends` enforce
+this; if you hit the version check, install from NodeSource first:
+
+```bash
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+sudo apt-get install -y nodejs
+```
+
+After installing, edit `/etc/helix-relay/helix-relay.env` (`HELIX_RELAY_PROXY` if behind
+a reverse proxy) and:
+
+```bash
+sudo systemctl enable --now helix-relay
+sudo journalctl -u helix-relay -f
+```
 
 ## Tests
 
