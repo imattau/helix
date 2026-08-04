@@ -58,6 +58,20 @@ function shortGenome(genome: string): string {
   return genome.length > 12 ? `${genome.slice(0, 6)}…${genome.slice(-4)}` : genome;
 }
 
+/** Promise.any() equivalent (app/'s tsconfig targets ES2020, which predates it) -
+ *  resolves with the first fulfilled promise, rejects only once every candidate has. */
+function raceFulfilled<T>(promises: Promise<T>[]): Promise<T> {
+  return new Promise((resolve, reject) => {
+    let remaining = promises.length;
+    promises.forEach((p) =>
+      p.then(resolve).catch(() => {
+        remaining -= 1;
+        if (remaining === 0) reject(new Error("every dial attempt failed"));
+      }),
+    );
+  });
+}
+
 function formatTimeAgo(physicalMs: number): string {
   const diffSec = Math.max(0, Math.floor((Date.now() - physicalMs) / 1000));
   if (diffSec < 60) return "now";
@@ -445,6 +459,15 @@ export class HelixClient {
     return this.selfGenome ? this.getUser(this.selfGenome.genome) : undefined;
   }
 
+  /** For QrPairingScreen's post-dial fallback: dialPeerAddrs() above already waits up
+   *  to 8s for the genome to resolve, but directory sync can take longer than that -
+   *  this lets the screen keep re-checking (on whatever re-render eventually fires from
+   *  a later notify()) without duplicating the peerId->genome lookup. */
+  getUserByPeerId(peerId: string): User | undefined {
+    const genome = this.store.getKnownGenomes().find((g) => g.peerId === peerId)?.genome;
+    return genome ? this.getUser(genome) : undefined;
+  }
+
   isFollowing(genome: string): boolean {
     if (!this.selfGenome) return false;
     return this.store.getFollowGraph().getFollowing(this.selfGenome.genome).includes(genome);
@@ -516,6 +539,50 @@ export class HelixClient {
   async requestDirectoryRefresh(): Promise<void> {
     if (!this.publicDiscoveryEnabled) return;
     await this.discoverAndSync();
+  }
+
+  /**
+   * This node's own dialable addresses, for showing in a QR pairing code (see
+   * QrPairingScreen.tsx). Filtered to `/p2p-circuit/` addresses specifically: this is a
+   * browser-mode node (see doConnect()'s `browser: true`), which per createNode.ts can
+   * never open a raw TCP/LAN listener at all - the only address that's ever actually
+   * dialable by a stranger is a circuit-relay reservation, which only exists once
+   * publicDiscovery has landed one (not instant - see the NAT traversal notes in
+   * createNode.ts). Empty until then; callers show a waiting state, not an error.
+   */
+  getOwnConnectAddrs(): string[] {
+    if (!this.publicDiscoveryEnabled) return [];
+    return this.node
+      .getMultiaddrs()
+      .map((a) => a.toString())
+      .filter((a) => a.includes("/p2p-circuit/"));
+  }
+
+  /**
+   * Dials every candidate address from a scanned QR code (first success wins - same
+   * race-and-take-the-first-connection shape as connectPublicDiscovery in
+   * rendezvous.ts), then does a short bounded wait for the peer's genome to resolve.
+   * Connecting itself already fires the existing peer:connect -> requestDirectoryFrom
+   * flow above; this just waits for that to catch up rather than duplicating it, since
+   * a scanned multiaddr's `/p2p/<peerId>` suffix means libp2p's noise handshake already
+   * authenticates *which* peer we connected to - the only gap left is HOW LONG it takes
+   * for its genome to arrive via directory sync.
+   */
+  async dialPeerAddrs(addrs: string[], signal?: AbortSignal): Promise<{ peerId: string; genome?: string }> {
+    const dialSignal = signal ?? AbortSignal.timeout(20_000);
+    const connection = await raceFulfilled(addrs.map((addr) => this.node.dial(multiaddr(addr), { signal: dialSignal })));
+    const peerId = connection.remotePeer.toString();
+
+    const genomeForPeer = (): string | undefined =>
+      this.store.getKnownGenomes().find((g) => g.peerId === peerId)?.genome;
+
+    const deadline = Date.now() + 8_000;
+    while (Date.now() < deadline) {
+      const genome = genomeForPeer();
+      if (genome) return { peerId, genome };
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    return { peerId, genome: genomeForPeer() };
   }
 
   /** Attachment to attach to a new post. `ipfsCid` is opt-in: if the caller already

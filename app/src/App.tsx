@@ -8,6 +8,7 @@ import { EditProfileScreen } from "./screens/EditProfileScreen";
 import { SearchScreen } from "./screens/SearchScreen";
 import { NotificationsScreen } from "./screens/NotificationsScreen";
 import { BackupKeyScreen } from "./screens/BackupKeyScreen";
+import { QrPairingScreen } from "./screens/QrPairingScreen";
 import { useHelixState } from "./backend/HelixProvider";
 import { NavRail } from "./components/NavRail";
 import { FeedListPane } from "./components/FeedListPane";
@@ -22,7 +23,8 @@ type Route =
   | { screen: "editProfile" }
   | { screen: "search" }
   | { screen: "notifications" }
-  | { screen: "backupKey" };
+  | { screen: "backupKey" }
+  | { screen: "qrPairing" };
 
 function App() {
   const client = useHelixState();
@@ -101,7 +103,17 @@ function App() {
           onBack={pop}
           onOpenSettings={() => push({ screen: "settings" })}
           onOpenPost={(postId) => push({ screen: "detail", postId })}
+          onOpenQrPairing={() => push({ screen: "qrPairing" })}
           onNavTab={handleNavTab}
+        />
+      );
+      break;
+    case "qrPairing":
+      screen = (
+        <QrPairingScreen
+          initialMode="show"
+          onDone={pop}
+          onOpenAuthor={(userId) => setStack((s) => [...s.slice(0, -1), { screen: "profile", userId }])}
         />
       );
       break;
@@ -157,7 +169,11 @@ function App() {
   const showFeedPane = current.screen === "detail" || current.screen === "profile" || current.screen === "compose";
   // helix-desktop-settings has its own topbar + sidebar, no nav-rail (see SettingsScreen.tsx) -
   // editProfile is reached from (and returns to) that same settings flow.
-  const showNavRail = current.screen !== "settings" && current.screen !== "editProfile" && current.screen !== "backupKey";
+  const showNavRail =
+    current.screen !== "settings" &&
+    current.screen !== "editProfile" &&
+    current.screen !== "backupKey" &&
+    current.screen !== "qrPairing";
   const activeTab: NavTab =
     current.screen === "search" || current.screen === "notifications"
       ? current.screen

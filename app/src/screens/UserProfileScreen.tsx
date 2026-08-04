@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ArrowLeft, MoreVertical, BadgeCheck } from "lucide-react";
+import { ArrowLeft, MoreVertical, BadgeCheck, QrCode } from "lucide-react";
 import { ScreenFrame } from "../components/ScreenFrame";
 import { Avatar } from "../components/Avatar";
 import { PostCard } from "../components/PostCard";
@@ -15,12 +15,14 @@ export function UserProfileScreen({
   onBack,
   onOpenSettings,
   onOpenPost,
+  onOpenQrPairing,
   onNavTab,
 }: {
   userId: string;
   onBack: () => void;
   onOpenSettings: () => void;
   onOpenPost: (postId: string) => void;
+  onOpenQrPairing: () => void;
   onNavTab: (tab: NavTab) => void;
 }) {
   const client = useHelixState();
@@ -52,9 +54,16 @@ export function UserProfileScreen({
             <ArrowLeft size={20} className="text-ink" />
           </button>
           <span className="text-[15px] font-bold text-ink">{user.handle}</span>
-          <button type="button" onClick={onOpenSettings} aria-label="More">
-            <MoreVertical size={20} className="text-ink" />
-          </button>
+          <div className="flex items-center gap-3">
+            {isSelf && (
+              <button type="button" onClick={onOpenQrPairing} aria-label="Connect via QR">
+                <QrCode size={20} className="text-ink" />
+              </button>
+            )}
+            <button type="button" onClick={onOpenSettings} aria-label="More">
+              <MoreVertical size={20} className="text-ink" />
+            </button>
+          </div>
         </div>
 
         <div className="flex w-full flex-col gap-4 border-b border-border bg-surface p-5">
