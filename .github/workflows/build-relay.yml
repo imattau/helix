@@ -16,9 +16,16 @@ jobs:
         with:
           node-version: lts/*
 
-      # src/cli/relay.ts only depends on the backend (src/), not app/ - no frontend
-      # install needed here, unlike build-desktop.yml/build-android.yml/build-ios.yml.
-      - name: Install dependencies
+      # src/cli/relay.ts itself only depends on the backend (src/), but the root
+      # tsconfig's test/**/*.ts include pulls in test/backend/tauriFileIO.test.ts,
+      # which imports app/src/backend/tauriFileIO.ts directly - so typecheck/test
+      # below transitively need app/'s node_modules (@tauri-apps/*) too, same as
+      # build-desktop.yml's "Both installs are required" comment explains.
+      - name: Install root (backend) dependencies
+        run: npm ci
+
+      - name: Install frontend dependencies
+        working-directory: app
         run: npm ci
 
       - name: Typecheck
