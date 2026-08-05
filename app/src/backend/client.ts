@@ -2,7 +2,7 @@ import { multiaddr } from "@multiformats/multiaddr";
 import { multiaddr as multiaddrV13 } from "@multiformats/multiaddr-v13";
 import { createHelixNode, type HelixNode } from "@helix/node/createNode.js";
 import { createIpfsNode, type IpfsNode } from "@helix/ipfs/node.js";
-import { connectPublicDiscovery } from "@helix/node/rendezvous.js";
+import { connectPublicDiscovery, isHelixPeer } from "@helix/node/rendezvous.js";
 import { MemoryStore } from "@helix/store/memoryStore.js";
 import { HybridLogicalClock } from "@helix/clock/hlc.js";
 import { registerUser, genomeProofInput } from "@helix/api/registerUser.js";
@@ -261,17 +261,31 @@ export class HelixClient {
 
     // Ask every peer we connect to (bootstrap or DHT-discovered) for its directory
     // exactly once - a fresh user's Discover is populated by this, not by waiting for
-    // whatever happens to be broadcast while they're online.
+    // whatever happens to be broadcast while they're online. publicDiscovery connects
+    // to plenty of non-Helix peers too (the public bootstrap swarm itself, and any
+    // other provider of discoverRendezvousPeers' fixed CID - DHT crawlers, etc. - see
+    // rendezvous.ts) - isHelixPeer gates the request on the same "does it actually
+    // speak our directory protocol" signal filterHelixPeers already uses, so those
+    // connections don't turn into a directory dial-and-fail against a peer that was
+    // never going to answer, spamming the console with requests to unrelated addresses.
     this.node.addEventListener("peer:connect", (evt) => {
       const peerId = evt.detail.toString();
       this.peerContact = true;
       this.notify();
       if (this.directoryRequestedPeers.has(peerId)) return;
       this.directoryRequestedPeers.add(peerId);
-      this.requestDirectoryFrom(peerId).catch((err) => {
-        this.directoryRequestedPeers.delete(peerId);
-        console.warn(`[helix] [DIRECTORY] request to ${peerId} failed: ${err instanceof Error ? err.message : err}`);
-      });
+      isHelixPeer(this.node, evt.detail)
+        .then((isHelix) => {
+          if (!isHelix) {
+            this.directoryRequestedPeers.delete(peerId);
+            return;
+          }
+          return this.requestDirectoryFrom(peerId);
+        })
+        .catch((err) => {
+          this.directoryRequestedPeers.delete(peerId);
+          console.warn(`[helix] [DIRECTORY] request to ${peerId} failed: ${err instanceof Error ? err.message : err}`);
+        });
       this.announceIpfsAddr();
     });
 

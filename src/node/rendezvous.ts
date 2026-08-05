@@ -143,7 +143,7 @@ const HELIX_PEER_VERIFY_POLL_MS = 250;
  *  automatically right after a connection is established, so the peerStore entry may
  *  not be populated yet the instant dial() resolves - poll briefly rather than
  *  checking once. */
-async function isHelixPeer(node: HelixNode, peerId: PeerId, budgetMs = HELIX_PEER_VERIFY_TIMEOUT_MS): Promise<boolean> {
+export async function isHelixPeer(node: HelixNode, peerId: PeerId, budgetMs = HELIX_PEER_VERIFY_TIMEOUT_MS): Promise<boolean> {
   const deadline = Date.now() + budgetMs;
   do {
     try {
