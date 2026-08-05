@@ -15,6 +15,7 @@ import { NotificationSettingsScreen } from "./screens/NotificationSettingsScreen
 import { LanguageScreen } from "./screens/LanguageScreen";
 import { AboutScreen } from "./screens/AboutScreen";
 import { BootstrapServerScreen } from "./screens/BootstrapServerScreen";
+import { FollowListScreen } from "./screens/FollowListScreen";
 import { registerBootstrapDeepLinkHandler } from "./backend/deepLink";
 import { useHelixState } from "./backend/HelixProvider";
 import { useTheme } from "./hooks/useTheme";
@@ -39,7 +40,8 @@ type Route =
   | { screen: "notificationSettings" }
   | { screen: "language" }
   | { screen: "about" }
-  | { screen: "bootstrapServer"; prefillAddr?: string };
+  | { screen: "bootstrapServer"; prefillAddr?: string }
+  | { screen: "followList"; userId: string; mode: "following" | "followers" };
 
 function App() {
   const client = useHelixState();
@@ -135,7 +137,18 @@ function App() {
           onOpenSettings={() => push({ screen: "settings" })}
           onOpenPost={(postId) => push({ screen: "detail", postId })}
           onOpenQrPairing={() => push({ screen: "qrPairing" })}
+          onOpenFollowList={(mode) => push({ screen: "followList", userId: current.userId, mode })}
           onNavTab={handleNavTab}
+        />
+      );
+      break;
+    case "followList":
+      screen = (
+        <FollowListScreen
+          userId={current.userId}
+          mode={current.mode}
+          onBack={pop}
+          onOpenAuthor={(userId) => push({ screen: "profile", userId })}
         />
       );
       break;
@@ -236,7 +249,8 @@ function App() {
     current.screen !== "notificationSettings" &&
     current.screen !== "language" &&
     current.screen !== "about" &&
-    current.screen !== "bootstrapServer";
+    current.screen !== "bootstrapServer" &&
+    current.screen !== "followList";
   const activeTab: NavTab =
     current.screen === "search" || current.screen === "notifications"
       ? current.screen

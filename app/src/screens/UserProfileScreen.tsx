@@ -16,6 +16,7 @@ export function UserProfileScreen({
   onOpenSettings,
   onOpenPost,
   onOpenQrPairing,
+  onOpenFollowList,
   onNavTab,
 }: {
   userId: string;
@@ -23,6 +24,7 @@ export function UserProfileScreen({
   onOpenSettings: () => void;
   onOpenPost: (postId: string) => void;
   onOpenQrPairing: () => void;
+  onOpenFollowList: (mode: "following" | "followers") => void;
   onNavTab: (tab: NavTab) => void;
 }) {
   const client = useHelixState();
@@ -89,12 +91,12 @@ export function UserProfileScreen({
             <span className="text-sm text-ink-muted">{user.handle}</span>
           </div>
           <div className="flex items-center gap-4 whitespace-nowrap text-[13px] text-ink-muted">
-            <p>
+            <button type="button" onClick={() => onOpenFollowList("following")}>
               <span className="font-bold text-ink">{formatCount(user.followingCount ?? 0)}</span> Following
-            </p>
-            <p>
+            </button>
+            <button type="button" onClick={() => onOpenFollowList("followers")}>
               <span className="font-bold text-ink">{formatCount(user.followerCount ?? 0)}</span> Followers
-            </p>
+            </button>
           </div>
         </div>
 

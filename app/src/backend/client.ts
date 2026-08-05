@@ -730,6 +730,27 @@ export class HelixClient {
       .filter((u): u is User => u !== undefined);
   }
 
+  /** The accounts `userId` follows - for FollowListScreen. Only ever the genomes this
+   *  device has actually observed a genome record for (same "no user directory beyond
+   *  what's been seen" constraint as getSuggestedUsers) - a followee this peer hasn't
+   *  encountered yet is silently dropped rather than shown as a broken entry. */
+  getFollowing(userId: string): User[] {
+    return this.store
+      .getFollowGraph()
+      .getFollowing(userId)
+      .map((genome) => this.getUser(genome))
+      .filter((u): u is User => u !== undefined);
+  }
+
+  /** The accounts that follow `userId` - see getFollowing()'s doc comment. */
+  getFollowers(userId: string): User[] {
+    return this.store
+      .getFollowGraph()
+      .getFollowers(userId)
+      .map((genome) => this.getUser(genome))
+      .filter((u): u is User => u !== undefined);
+  }
+
   /** Recent top-level posts from people the user doesn't follow yet - the content half
    *  of the Discover section. */
   getDiscoverFeed(limit = 20): Post[] {

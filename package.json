@@ -1,6 +1,6 @@
 {
   "name": "helix",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Decentralized DNA-math-driven social protocol prototype on libp2p",
   "type": "module",
   "private": true,
