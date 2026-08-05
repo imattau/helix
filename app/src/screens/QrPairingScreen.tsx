@@ -157,7 +157,17 @@ function ScanCode({
   const startScan = async () => {
     setState({ phase: "scanning" });
     try {
-      const { scan, Format } = await import("@tauri-apps/plugin-barcode-scanner");
+      const { scan, Format, requestPermissions } = await import("@tauri-apps/plugin-barcode-scanner");
+      // The plugin never requests this itself - scan() just throws if it's missing.
+      // Android 6+ (and iOS) require this explicit runtime request even though the
+      // CAMERA permission is already declared in the manifest. requestPermissions()
+      // is a no-op prompt-wise if already granted/denied, so it's safe to call
+      // unconditionally rather than checkPermissions()-then-request.
+      const permission = await requestPermissions();
+      if (permission !== "granted") {
+        setState({ phase: "error", message: "Camera permission denied - enable it in system settings to scan." });
+        return;
+      }
       const result = await scan({ formats: [Format.QRCode], windowed: true });
       const addrs = decodeQrPairingPayload(result.content);
       setState({ phase: "connecting" });
