@@ -6,6 +6,7 @@ import { toHex, fromHex } from "@helix/crypto/hex.js";
 const STORAGE_KEY = "helix.identity.privateKeyHex";
 const DISPLAY_NAME_KEY = "helix.identity.displayName";
 const PUBLIC_DISCOVERY_KEY = "helix.identity.publicDiscoveryEnabled";
+const CUSTOM_BOOTSTRAP_KEY = "helix.identity.customBootstrapMultiaddr";
 
 export interface HelixIdentity {
   privateKey: Ed25519PrivateKey;
@@ -76,6 +77,33 @@ export function isPublicDiscoveryEnabled(): boolean {
 
 export function setPublicDiscoveryEnabled(enabled: boolean): void {
   localStorage.setItem(PUBLIC_DISCOVERY_KEY, String(enabled));
+}
+
+/**
+ * A user-supplied bootstrap/relay multiaddr, overriding the build-time
+ * VITE_BOOTSTRAP_MULTIADDR default (see client.ts's connect()) - needed because a
+ * browser-hosted node has no LAN-capable transport of its own at all (no raw TCP, no
+ * mDNS - see createNode.ts) and is *only* ever reachable through whatever relay it
+ * bootstraps through, regardless of physical proximity to the peer it's trying to
+ * reach. Pointing this at a relay you actually control (e.g. the one documented in
+ * the README's NAT traversal section) is the way to get a known-good, low-latency
+ * path instead of depending on whatever the build was shipped with. `null` (the
+ * default, nothing set) means "use the build-time default, if any."
+ *
+ * Same "read once at connect() time, reload to apply" contract as
+ * isPublicDiscoveryEnabled() above - the libp2p node's bootstrap dial happens once at
+ * construction, so this can't hot-swap into a running session.
+ */
+export function getCustomBootstrapMultiaddr(): string | null {
+  return localStorage.getItem(CUSTOM_BOOTSTRAP_KEY);
+}
+
+export function setCustomBootstrapMultiaddr(addr: string | null): void {
+  if (addr === null) {
+    localStorage.removeItem(CUSTOM_BOOTSTRAP_KEY);
+  } else {
+    localStorage.setItem(CUSTOM_BOOTSTRAP_KEY, addr);
+  }
 }
 
 /**

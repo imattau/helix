@@ -40,7 +40,7 @@ import {
 import { verifyProofOfWork, REGISTRATION_DIFFICULTY_BITS } from "@helix/crypto/pow.js";
 import { fromHex } from "@helix/crypto/hex.js";
 import type { Attachment, Genome, Helix, Follow } from "@helix/types/index.js";
-import { loadOrCreateIdentity, isPublicDiscoveryEnabled } from "./identity";
+import { loadOrCreateIdentity, isPublicDiscoveryEnabled, getCustomBootstrapMultiaddr } from "./identity";
 import { createBrowserPolyPackAdapters } from "./polypackPersistence";
 import { SearchIndex } from "./searchIndex";
 import { isTauri } from "./platform";
@@ -261,35 +261,37 @@ export class HelixClient {
 
     // Ask every peer we connect to (bootstrap or DHT-discovered) for its directory
     // exactly once - a fresh user's Discover is populated by this, not by waiting for
-    // whatever happens to be broadcast while they're online. publicDiscovery connects
-    // to plenty of non-Helix peers too (the public bootstrap swarm itself, and any
-    // other provider of discoverRendezvousPeers' fixed CID - DHT crawlers, etc. - see
-    // rendezvous.ts) - isHelixPeer gates the request on the same "does it actually
-    // speak our directory protocol" signal filterHelixPeers already uses, so those
-    // connections don't turn into a directory dial-and-fail against a peer that was
-    // never going to answer, spamming the console with requests to unrelated addresses.
+    // whatever happens to be broadcast while they're online. Always attempted
+    // immediately, never gated on isHelixPeer() first - that check polls for identify
+    // to populate the peer's protocol list (up to HELIX_PEER_VERIFY_TIMEOUT_MS), which
+    // isn't guaranteed to land within that window on a relayed connection; gating the
+    // *attempt* on it would risk silently never requesting a directory at all from a
+    // real, slow-to-identify Helix peer (confirmed as a real regression risk, not
+    // exercised by this repo's own tests, which only ever connect over instant
+    // loopback TCP). Used only below, in the catch, to decide whether a failure is
+    // worth logging - publicDiscovery connects to plenty of non-Helix peers too (the
+    // public bootstrap swarm itself, any other provider of discoverRendezvousPeers'
+    // fixed CID - DHT crawlers, etc. - see rendezvous.ts), and those are expected to
+    // fail this request, not worth a console warning each time.
     this.node.addEventListener("peer:connect", (evt) => {
       const peerId = evt.detail.toString();
       this.peerContact = true;
       this.notify();
       if (this.directoryRequestedPeers.has(peerId)) return;
       this.directoryRequestedPeers.add(peerId);
-      isHelixPeer(this.node, evt.detail)
-        .then((isHelix) => {
-          if (!isHelix) {
-            this.directoryRequestedPeers.delete(peerId);
-            return;
-          }
-          return this.requestDirectoryFrom(peerId);
-        })
-        .catch((err) => {
-          this.directoryRequestedPeers.delete(peerId);
-          console.warn(`[helix] [DIRECTORY] request to ${peerId} failed: ${err instanceof Error ? err.message : err}`);
-        });
+      this.requestDirectoryFrom(peerId).catch(async (err) => {
+        this.directoryRequestedPeers.delete(peerId);
+        if (!(await isHelixPeer(this.node, evt.detail))) return;
+        console.warn(`[helix] [DIRECTORY] request to ${peerId} failed: ${err instanceof Error ? err.message : err}`);
+      });
       this.announceIpfsAddr();
     });
 
-    const bootstrap = import.meta.env.VITE_BOOTSTRAP_MULTIADDR;
+    // A user-set relay (SettingsScreen's "Bootstrap Server") always wins over the
+    // build-time default - see identity.ts's getCustomBootstrapMultiaddr() doc
+    // comment for why this matters (a browser tab has no LAN-capable transport at
+    // all, so it's only ever reachable through whichever relay it bootstraps through).
+    const bootstrap = getCustomBootstrapMultiaddr() ?? import.meta.env.VITE_BOOTSTRAP_MULTIADDR;
     if (bootstrap) {
       try {
         await this.node.dial(multiaddr(bootstrap), { signal: AbortSignal.timeout(15_000) });

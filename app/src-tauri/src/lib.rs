@@ -25,7 +25,22 @@ fn local_ipv4_addresses() -> Vec<String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let builder = tauri::Builder::default()
+    let builder = tauri::Builder::default();
+
+    // Must be the very first plugin registered (per tauri-plugin-single-instance's own
+    // docs) - its "deep-link" feature is what makes a helix:// link opened while the
+    // app is already running (which on Windows/Linux relaunches a second process
+    // rather than emitting an event directly) forward into the SAME onOpenUrl event
+    // tauri-plugin-deep-link emits natively on macOS/Android/iOS, so the frontend
+    // (deepLink.ts) only has to handle one code path. Desktop-only: mobile platforms
+    // never have a "second instance" in this sense at all.
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|_app, argv, _cwd| {
+        println!("[helix] second instance launched with {argv:?} - deep link event already forwarded");
+    }));
+
+    let builder = builder
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_tcp::init());

@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { HomeFeedScreen } from "./screens/HomeFeedScreen";
 import { PostDetailScreen } from "./screens/PostDetailScreen";
 import { UserProfileScreen } from "./screens/UserProfileScreen";
@@ -14,6 +14,8 @@ import { WhoCanReplyScreen } from "./screens/WhoCanReplyScreen";
 import { NotificationSettingsScreen } from "./screens/NotificationSettingsScreen";
 import { LanguageScreen } from "./screens/LanguageScreen";
 import { AboutScreen } from "./screens/AboutScreen";
+import { BootstrapServerScreen } from "./screens/BootstrapServerScreen";
+import { registerBootstrapDeepLinkHandler } from "./backend/deepLink";
 import { useHelixState } from "./backend/HelixProvider";
 import { useTheme } from "./hooks/useTheme";
 import { NavRail } from "./components/NavRail";
@@ -36,7 +38,8 @@ type Route =
   | { screen: "whoCanReply" }
   | { screen: "notificationSettings" }
   | { screen: "language" }
-  | { screen: "about" };
+  | { screen: "about" }
+  | { screen: "bootstrapServer"; prefillAddr?: string };
 
 function App() {
   const client = useHelixState();
@@ -46,6 +49,20 @@ function App() {
 
   const push = (route: Route) => setStack((s) => [...s, route]);
   const pop = () => setStack((s) => (s.length > 1 ? s.slice(0, -1) : s));
+
+  // A helix://bootstrap?addr=... link (tapped from the relay's own webpage, or a QR
+  // scan on a platform without camera access to the app itself) jumps straight to
+  // BootstrapServerScreen with the address pre-filled - never auto-saved, see
+  // deepLink.ts's doc comment for why. Registered once for the app's lifetime.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    registerBootstrapDeepLinkHandler((addr) => {
+      setStack((s) => [...s, { screen: "bootstrapServer", prefillAddr: addr }]);
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => unlisten?.();
+  }, []);
   const current = stack[stack.length - 1];
 
   const handleNavTab = (tab: NavTab) => {
@@ -157,6 +174,7 @@ function App() {
           onOpenNotificationSettings={() => push({ screen: "notificationSettings" })}
           onOpenLanguage={() => push({ screen: "language" })}
           onOpenAbout={() => push({ screen: "about" })}
+          onOpenBootstrapServer={() => push({ screen: "bootstrapServer" })}
         />
       );
       break;
@@ -180,6 +198,9 @@ function App() {
       break;
     case "about":
       screen = <AboutScreen onBack={pop} />;
+      break;
+    case "bootstrapServer":
+      screen = <BootstrapServerScreen onBack={pop} initialAddr={current.prefillAddr} />;
       break;
     case "search":
       screen = (
@@ -214,7 +235,8 @@ function App() {
     current.screen !== "whoCanReply" &&
     current.screen !== "notificationSettings" &&
     current.screen !== "language" &&
-    current.screen !== "about";
+    current.screen !== "about" &&
+    current.screen !== "bootstrapServer";
   const activeTab: NavTab =
     current.screen === "search" || current.screen === "notifications"
       ? current.screen

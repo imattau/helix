@@ -190,6 +190,14 @@ address instead of its own unreachable local one:
 npm run relay -- --proxy relay.example.com
 ```
 
+It also serves a small Helix-branded web page (default `--port + 2`, e.g. `4003`) with
+this relay's bootstrap multiaddr as both a QR code and copyable text, plus an
+`Open in Helix` link (`helix://bootstrap?addr=...` - opens the app directly to
+Settings → Bootstrap Server with the address pre-filled) - the thing to actually link
+from a README/Discord/etc, since hand-typing a raw multiaddr into
+`BootstrapServerScreen` is real friction for a non-technical user. Override with
+`--web-port <port>`, or `--web-port 0` to disable it.
+
 ### Deploying as a systemd service (Linux)
 
 `.github/workflows/build-relay.yml` builds two release artifacts on every push (a

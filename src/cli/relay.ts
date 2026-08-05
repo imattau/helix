@@ -16,10 +16,12 @@ if (typeof globalThis.CustomEvent === 'undefined') {
 
 import path from 'node:path';
 import fs from 'node:fs/promises';
+import type { Server } from 'node:http';
 import { generateKeyPair, privateKeyFromProtobuf, privateKeyToProtobuf } from '@libp2p/crypto/keys';
 import type { Ed25519PrivateKey } from '@libp2p/interface';
 import { createHelixNode } from '../node/createNode.js';
 import { announceAndVerifyRendezvous } from '../node/rendezvous.js';
+import { startRelayPageServer } from './relayPage.js';
 
 /**
  * A standalone circuit-relay-v2 + DHT-rendezvous anchor: the always-on, genuinely
@@ -48,6 +50,10 @@ function parseArgs(argv: string[]): Record<string, string> {
 
 const DEFAULT_PORT = 4001;
 const DEFAULT_DATA_DIR = '/var/lib/helix-relay';
+/** port+1 is already the WebSocket listener (see createNode.ts) - +2 keeps the web
+ *  page on its own port with no risk of colliding with either. `--web-port 0`
+ *  disables the page entirely. */
+const DEFAULT_WEB_PORT_OFFSET = 2;
 
 /**
  * The relay's own PeerId must survive restarts: every `/p2p-circuit/p2p/<relay-id>`
@@ -76,6 +82,19 @@ function toAnnounceMultiaddr(proxy: string): string {
   return proxy.startsWith('/') ? proxy : `/dns4/${proxy}/tcp/443/wss`;
 }
 
+/** Picks which of the relay's own multiaddrs is worth putting on the web page/QR -
+ *  prefers the proxied announce address when one's configured (that's the actually-
+ *  dialable-from-the-internet one), otherwise the first WebSocket-capable listen
+ *  address, since a browser-mode Helix client (webSockets()+circuitRelayTransport()
+ *  only - see createNode.ts) can never dial a raw tcp() address anyway. */
+function pickBootstrapAddr(addrs: string[], proxy: string | undefined): string | undefined {
+  if (proxy) {
+    const prefix = toAnnounceMultiaddr(proxy);
+    return addrs.find((a) => a.startsWith(prefix));
+  }
+  return addrs.find((a) => a.includes('/ws')) ?? addrs[0];
+}
+
 /** How often the relay re-announces its rendezvous key - provider records expire on
  *  the DHT (see src/node/rendezvous.ts). */
 const DHT_REANNOUNCE_INTERVAL_MS = 30 * 60_000;
@@ -85,6 +104,12 @@ async function main() {
   const port = Number(args.port ?? process.env.HELIX_RELAY_PORT ?? DEFAULT_PORT);
   const dataDir = path.resolve(args['data-dir'] ?? process.env.HELIX_RELAY_DATA_DIR ?? DEFAULT_DATA_DIR);
   const proxy = args.proxy ?? process.env.HELIX_RELAY_PROXY;
+  // Empty string (not just unset) must also fall through to the default - systemd's
+  // EnvironmentFile sets a bare `HELIX_RELAY_WEB_PORT=` line to "", not undefined,
+  // same reasoning as the existing `if (proxy)` truthiness check below rather than a
+  // `?? ` chain for HELIX_RELAY_PROXY.
+  const webPortRaw = args['web-port'] || process.env.HELIX_RELAY_WEB_PORT;
+  const webPort = webPortRaw ? Number(webPortRaw) : port + DEFAULT_WEB_PORT_OFFSET;
 
   const privateKey = await loadOrCreateIdentity(path.join(dataDir, 'identity.key'));
   const node = await createHelixNode({
@@ -103,11 +128,26 @@ async function main() {
     console.log(`[helix-relay] announcing behind reverse proxy as: ${toAnnounceMultiaddr(proxy)}`);
   }
 
+  let webServer: Server | undefined;
+  if (webPort > 0) {
+    const bootstrapAddr = pickBootstrapAddr(
+      node.getMultiaddrs().map((a) => a.toString()),
+      proxy,
+    );
+    if (bootstrapAddr) {
+      webServer = startRelayPageServer(webPort, bootstrapAddr);
+      console.log(`[helix-relay] web page (QR + bootstrap address) on: http://0.0.0.0:${webPort}`);
+    } else {
+      console.warn('[helix-relay] no dialable address found for the web page - skipping it');
+    }
+  }
+
   let shuttingDown = false;
   async function shutdown(exitCode: number): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     console.log('[helix-relay] shutting down...');
+    await new Promise<void>((resolve) => (webServer ? webServer.close(() => resolve()) : resolve()));
     await node.stop();
     process.exit(exitCode);
   }

@@ -35,4 +35,13 @@ tauri-plugin-tcp = "0.1"
 if-addrs = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# helix://bootstrap?addr=<multiaddr> deep links - see app/src/backend/deepLink.ts.
+# macOS/Android/iOS get onOpenUrl events straight from this plugin; Windows/Linux
+# instead relaunch a second process with the URL as a CLI arg, which single-instance
+# below (with its "deep-link" feature) forwards back into the same onOpenUrl event
+# path so the frontend only has to handle one code path across every platform.
+tauri-plugin-deep-link = "2"
+
+[target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 

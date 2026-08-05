@@ -8,6 +8,7 @@ import {
   Bell,
   Globe,
   Radar,
+  Server,
   UserMinus,
   CircleX,
   CircleHelp,
@@ -107,6 +108,7 @@ export function SettingsScreen({
   onOpenNotificationSettings,
   onOpenLanguage,
   onOpenAbout,
+  onOpenBootstrapServer,
 }: {
   onBack: () => void;
   onEditProfile: () => void;
@@ -118,6 +120,7 @@ export function SettingsScreen({
   onOpenNotificationSettings: () => void;
   onOpenLanguage: () => void;
   onOpenAbout: () => void;
+  onOpenBootstrapServer: () => void;
 }) {
   const [publicDiscovery, setPublicDiscoveryState] = useState(isPublicDiscoveryEnabled());
   const replyAudience = getReplyAudience();
@@ -244,6 +247,12 @@ export function SettingsScreen({
           icon={Radar}
           label="Public Peer Discovery"
           trailing={<Toggle checked={publicDiscovery} onChange={togglePublicDiscovery} />}
+        />
+        <SettingsRow
+          icon={Server}
+          label="Bootstrap Server"
+          onClick={onOpenBootstrapServer}
+          trailing={<ChevronRight size={16} className="text-ink-muted" />}
         />
         <SettingsRow
           icon={UserMinus}

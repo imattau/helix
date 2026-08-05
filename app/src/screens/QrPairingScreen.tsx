@@ -19,6 +19,11 @@ const ADDR_POLL_MS = 2_000;
  *  capping well below that ceiling costs nothing but headroom. */
 const MAX_QR_ADDRS = 4;
 
+/** How long ScanCode's "Connected - waiting for their profile" state waits before
+ *  showing a hint that directory sync may have stalled - see the useEffect that uses
+ *  this for why the wait itself has no hard upper bound. */
+const STALLED_HINT_MS = 12_000;
+
 /**
  * Direct peer pairing via QR code - skips the public DHT's discovery timing/luck
  * entirely by encoding a specific peer's dialable address(es) (see client.ts's
@@ -43,7 +48,17 @@ export function QrPairingScreen({
   const [mode, setMode] = useState<"show" | "scan">(initialMode);
 
   useEffect(() => {
+    // A dynamic import() always resolves once bundled - it says nothing about
+    // whether the *native* plugin is actually reachable (a plain browser tab has no
+    // Tauri IPC bridge at all, and Tauri desktop builds never register this plugin
+    // in the first place - see src-tauri/src/lib.rs's #[cfg(mobile)] gate). Calling
+    // checkPermissions() (side-effect-free - it only reads current state, never
+    // prompts) is what actually distinguishes "mobile Tauri, plugin registered" from
+    // both of those: it throws on both, confirmed by testing this exact screen in a
+    // plain browser tab, where the old import()-only check incorrectly left the
+    // Scan tab visible.
     import("@tauri-apps/plugin-barcode-scanner")
+      .then(({ checkPermissions }) => checkPermissions())
       .then(() => setScanSupported(true))
       .catch(() => setScanSupported(false));
   }, []);
@@ -164,6 +179,7 @@ function ScanCode({
 }) {
   const [state, setState] = useState<ScanState>({ phase: "idle" });
   const opened = useRef(false);
+  const [stalled, setStalled] = useState(false);
 
   // Once connected, keep re-checking for the resolved profile on every re-render this
   // component gets (any HelixClient notify() bumps useHelixState's version) - covers
@@ -176,6 +192,20 @@ function ScanCode({
       onOpenAuthor(user.id);
     }
   }, [state, client, onOpenAuthor]);
+
+  // The wait above has no upper bound of its own - directory sync (client.ts's
+  // requestDirectoryFrom, fired on peer:connect) is best-effort and can fail
+  // silently (a relay resource limit, a slow/never-completing stream, the other
+  // device going offline mid-sync). Without this, a stall here looks identical to
+  // "still working" forever, with nothing for the user to act on - flip to a visible
+  // hint (not an error - the connection itself is still fine and might yet resolve)
+  // after a generous wait, and offer a manual way out instead of a silent hang.
+  useEffect(() => {
+    setStalled(false);
+    if (state.phase !== "connected") return;
+    const timer = setTimeout(() => setStalled(true), STALLED_HINT_MS);
+    return () => clearTimeout(timer);
+  }, [state.phase]);
 
   // windowed: true makes the native *webview* transparent so the camera preview
   // shows through from behind it - our own opaque backgrounds (body, this screen's
@@ -243,6 +273,20 @@ function ScanCode({
         <p className="text-center text-sm text-ink-muted">
           {state.phase === "connecting" ? "Connecting…" : "Connected - waiting for their profile…"}
         </p>
+        {state.phase === "connected" && stalled && (
+          <>
+            <p className="text-center text-sm text-ink-muted">
+              This is taking longer than usual - they may be offline or hard to reach right now.
+            </p>
+            <button
+              type="button"
+              onClick={() => setState({ phase: "idle" })}
+              className="rounded-xl border border-border px-4 py-2 text-sm font-bold text-ink"
+            >
+              Cancel
+            </button>
+          </>
+        )}
       </div>
     );
   }
