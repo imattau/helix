@@ -41,6 +41,28 @@ export function decodeIpfsAddr(data: Uint8Array): IpfsAddrMessage {
   return JSON.parse(new TextDecoder().decode(data)) as IpfsAddrMessage;
 }
 
+/**
+ * Same shape as IpfsAddrMessage, deliberately a distinct type rather than reusing it -
+ * this announces the *main* node's own dialable addresses (see TOPICS.PEER_ADDR),
+ * not Helia's. Unlike GenesisMessage, nothing here is self-authenticating (no PoW, no
+ * signature over the claimed peerId) - a receiver MUST cross-check the claimed
+ * `peerId` against the gossipsub message's own verified sender (`evt.detail.from`,
+ * authentic under gossipsub's default StrictSign policy - see relay.ts's handler)
+ * before trusting it, or anyone could broadcast a fake peerId/address pair.
+ */
+export interface PeerAddrMessage {
+  peerId: string;
+  multiaddrs: string[];
+}
+
+export function encodePeerAddr(msg: PeerAddrMessage): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify(msg));
+}
+
+export function decodePeerAddr(data: Uint8Array): PeerAddrMessage {
+  return JSON.parse(new TextDecoder().decode(data)) as PeerAddrMessage;
+}
+
 /** Wire form of a post omits `contentHashBase4` - it's fully determined by `content`
  * and `attachment` via computePostContentHash (src/crypto/postHash.ts), so every
  * receiver recomputes it locally instead of trusting a transmitted copy. This also

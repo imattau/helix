@@ -73,7 +73,7 @@ describe('directory sync over libp2p', () => {
       powNonce: 0, // would need ~65k average attempts - clearly not a valid proof
     };
     const { genomesAccepted, postsAccepted } = ingestDirectory(store, {
-      entries: [{ genome: fake, recentPosts: [] }],
+      entries: [{ genome: fake, recentPosts: [], multiaddrs: [] }],
     });
 
     expect(genomesAccepted).toBe(0);

@@ -22,6 +22,12 @@ import type { Ed25519PrivateKey } from '@libp2p/interface';
 import { createHelixNode } from '../node/createNode.js';
 import { announceAndVerifyRendezvous } from '../node/rendezvous.js';
 import { startRelayPageServer } from './relayPage.js';
+import { TOPICS } from '../node/pubsubTopics.js';
+import { decodeGenesis, decodePeerAddr } from '../node/messages.js';
+import { MemoryStore } from '../store/memoryStore.js';
+import { acceptVerifiedGenome } from '../api/registerUser.js';
+import { registerDirectoryHandler } from '../node/directory.js';
+import { PeerAddressBook } from '../node/peerAddressBook.js';
 
 /**
  * A standalone circuit-relay-v2 + DHT-rendezvous anchor: the always-on, genuinely
@@ -127,6 +133,50 @@ async function main() {
   if (proxy) {
     console.log(`[helix-relay] announcing behind reverse proxy as: ${toAnnounceMultiaddr(proxy)}`);
   }
+
+  // Peer directory: every peer that bootstraps through this relay is directly
+  // (single-hop) connected to it, making it a far more reliable rendezvous point
+  // than the public DHT's own multi-hop provide/find (see the project's own
+  // observed convergence flakiness there - two healthy, correctly-announcing peers
+  // failing to find each other). Genome-only (no post content ever passes through
+  // here) - see acceptVerifiedGenome's PoW check and the PeerAddressBook's own doc
+  // comment for why each half of a "directory entry" is bounded/verified
+  // differently.
+  const directoryStore = new MemoryStore();
+  const peerAddresses = new PeerAddressBook();
+  registerDirectoryHandler(node, directoryStore, (peerId) => peerAddresses.get(peerId));
+  node.services.pubsub.subscribe(TOPICS.GENESIS);
+  node.services.pubsub.subscribe(TOPICS.PEER_ADDR);
+  node.services.pubsub.addEventListener('message', (evt) => {
+    if (evt.detail.topic === TOPICS.GENESIS) {
+      try {
+        const { genome } = decodeGenesis(evt.detail.data);
+        acceptVerifiedGenome(directoryStore, genome); // PoW-verified inside; silently skipped if invalid
+      } catch (err) {
+        console.warn('[helix-relay] [directory] malformed genesis broadcast', err instanceof Error ? err.message : err);
+      }
+    } else if (evt.detail.topic === TOPICS.PEER_ADDR) {
+      try {
+        const msg = decodePeerAddr(evt.detail.data);
+        // The claimed peerId inside the message isn't self-authenticating (unlike
+        // genesis's PoW) - cross-check it against gossipsub's own verified sender
+        // (evt.detail.from, authentic under the default StrictSign policy - this
+        // project never overrides globalSignaturePolicy to StrictNoSign, so a
+        // 'message' event's detail is always the 'signed' variant in practice, but
+        // the type is a union either way) before trusting it, or anyone could
+        // broadcast a fake peerId/address pair and poison the directory with
+        // addresses that dial somewhere else entirely.
+        if (evt.detail.type !== 'signed' || evt.detail.from.toString() !== msg.peerId) {
+          const from = evt.detail.type === 'signed' ? evt.detail.from.toString() : '(unsigned)';
+          console.warn(`[helix-relay] [directory] dropped spoofed peer-addr claim (from=${from}, claimed=${msg.peerId})`);
+          return;
+        }
+        peerAddresses.set(msg.peerId, msg.multiaddrs);
+      } catch (err) {
+        console.warn('[helix-relay] [directory] malformed peer-addr broadcast', err instanceof Error ? err.message : err);
+      }
+    }
+  });
 
   let webServer: Server | undefined;
   if (webPort > 0) {

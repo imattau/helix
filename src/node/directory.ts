@@ -46,6 +46,15 @@ export interface DirectoryRequest {
 export interface DirectoryEntry {
   genome: Genome;
   recentPosts: Helix[];
+  /** Self-reported dialable addresses for this genome's peerId (see
+   *  TOPICS.PEER_ADDR/messages.ts's PeerAddrMessage) - `[]` when the server has none
+   *  on file, not just for peers on old builds that predate this field. Only ever
+   *  populated by a server that's actually tracking these (currently just the relay -
+   *  see relay.ts); a regular peer's own buildDirectorySnapshot() call always emits
+   *  `[]` here, and ingestDirectory() doesn't do anything with a nonempty one yet -
+   *  there's no HelixStore slot for "other peers' addresses" (out of scope for this
+   *  pass, which only needed the relay to serve them). */
+  multiaddrs: string[];
 }
 
 export interface DirectorySnapshot {
@@ -63,6 +72,7 @@ export function encodeDirectory(snapshot: DirectorySnapshot): Uint8Array {
         const { contentHashBase4: _contentHashBase4, ...rest } = post;
         return rest as WirePost;
       }),
+      multiaddrs: entry.multiaddrs,
     })),
   };
   return new TextEncoder().encode(JSON.stringify(wire));
@@ -70,7 +80,7 @@ export function encodeDirectory(snapshot: DirectorySnapshot): Uint8Array {
 
 export function decodeDirectory(data: Uint8Array): DirectorySnapshot {
   const wire = JSON.parse(new TextDecoder().decode(data)) as {
-    entries: { genome: Genome; recentPosts: WirePost[] }[];
+    entries: { genome: Genome; recentPosts: WirePost[]; multiaddrs?: string[] }[];
   };
   return {
     entries: wire.entries.map((entry) => ({
@@ -79,6 +89,8 @@ export function decodeDirectory(data: Uint8Array): DirectorySnapshot {
         ...post,
         contentHashBase4: to_base4(computePostContentHash(post.content, post.attachment)),
       })),
+      // Optional on decode - a sender on a build older than this field omits it entirely.
+      multiaddrs: entry.multiaddrs ?? [],
     })),
   };
 }
@@ -90,10 +102,15 @@ function clampLimit(value: number | undefined, max: number, fallback: number): n
 }
 
 /** Builds a directory snapshot from the local store: current-version posts only,
- *  in twist order so a receiver's ingest walks the same append-only TAD sequence. */
+ *  in twist order so a receiver's ingest walks the same append-only TAD sequence.
+ *  `getMultiaddrs`, if given, looks up self-reported dialable addresses per genome's
+ *  peerId (see DirectoryEntry.multiaddrs's doc comment) - omitted entirely by callers
+ *  that don't track any (i.e. everyone except the relay today), which is equivalent
+ *  to every entry getting `[]`. */
 export function buildDirectorySnapshot(
   store: HelixStore,
   req: DirectoryRequest = {},
+  getMultiaddrs?: (peerId: string) => string[] | undefined,
 ): DirectorySnapshot {
   const limit = clampLimit(req.limit, DIRECTORY_MAX_GENOMES, DIRECTORY_MAX_GENOMES);
   const perGenome = clampLimit(req.recentPostsPerGenome, DIRECTORY_RECENT_POSTS_PER_GENOME, DIRECTORY_RECENT_POSTS_PER_GENOME);
@@ -108,6 +125,7 @@ export function buildDirectorySnapshot(
     entries.push({
       genome,
       recentPosts: currentPosts.slice(-perGenome),
+      multiaddrs: getMultiaddrs?.(genome.peerId) ?? [],
     });
   }
   return { entries };
@@ -165,8 +183,13 @@ async function readAll(stream: Stream, maxBytes = 1 << 20): Promise<Uint8Array> 
   return out;
 }
 
-/** Serves directory requests over `/helix/directory/1.0.0`. */
-export function registerDirectoryHandler(node: HelixNode, store: HelixStore): void {
+/** Serves directory requests over `/helix/directory/1.0.0`. `getMultiaddrs` is
+ *  forwarded to buildDirectorySnapshot() - see its doc comment. */
+export function registerDirectoryHandler(
+  node: HelixNode,
+  store: HelixStore,
+  getMultiaddrs?: (peerId: string) => string[] | undefined,
+): void {
   node
     .handle(DIRECTORY_PROTOCOL, async ({ stream }) => {
       try {
@@ -176,7 +199,7 @@ export function registerDirectoryHandler(node: HelixNode, store: HelixStore): vo
         } catch {
           // unparseable/empty request - fall back to defaults
         }
-        const snapshot = buildDirectorySnapshot(store, req);
+        const snapshot = buildDirectorySnapshot(store, req, getMultiaddrs);
         await stream.sink([encodeDirectory(snapshot)]);
       } catch (err) {
         console.warn('[helix] directory handler failed', err instanceof Error ? err.message : err);

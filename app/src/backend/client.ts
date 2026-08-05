@@ -25,6 +25,7 @@ import {
   decodeFollow,
   decodeIpfsAddr,
   encodeIpfsAddr,
+  encodePeerAddr,
 } from "@helix/node/messages.js";
 import {
   buildDirectorySnapshot,
@@ -285,6 +286,7 @@ export class HelixClient {
         console.warn(`[helix] [DIRECTORY] request to ${peerId} failed: ${err instanceof Error ? err.message : err}`);
       });
       this.announceIpfsAddr();
+      this.announcePeerAddr();
     });
 
     // A user-set relay (SettingsScreen's "Bootstrap Server") always wins over the
@@ -443,6 +445,26 @@ export class HelixClient {
       .publish(TOPICS.DIRECTORY, encodeDirectory(snapshot))
       .catch((err) => {
         console.warn("[helix] [DIRECTORY] broadcast failed", err instanceof Error ? err.message : err);
+      });
+  }
+
+  /** Best-effort: broadcasts this device's own dialable multiaddrs (getOwnConnectAddrs() -
+   *  circuit-relay reservation, native LAN TCP, whatever's actually available) on
+   *  TOPICS.PEER_ADDR, same "announce over the already-working gossipsub channel"
+   *  pattern as announceIpfsAddr() above, just for the main node. Currently only a
+   *  relay (src/cli/relay.ts) actually listens for and stores these, building a
+   *  genuinely dialable peer directory instead of one that only carries bare
+   *  peerIds a receiver would otherwise need a DHT peer-routing lookup to resolve -
+   *  see directory.ts's DirectoryEntry.multiaddrs. Harmless (just unheard) to publish
+   *  even when nothing's listening. No-ops until getOwnConnectAddrs() has something
+   *  to say - same empty-check reasoning as announceIpfsAddr(). */
+  private announcePeerAddr(): void {
+    const multiaddrs = this.getOwnConnectAddrs();
+    if (multiaddrs.length === 0) return;
+    void this.node.services.pubsub
+      .publish(TOPICS.PEER_ADDR, encodePeerAddr({ peerId: this.node.peerId.toString(), multiaddrs }))
+      .catch((err) => {
+        console.warn("[helix] [PEER_ADDR] broadcast failed", err instanceof Error ? err.message : err);
       });
   }
 
