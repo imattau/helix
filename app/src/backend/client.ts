@@ -767,7 +767,20 @@ export class HelixClient {
    */
   async dialPeerAddrs(addrs: string[], signal?: AbortSignal): Promise<{ peerId: string; genome?: string }> {
     const dialSignal = signal ?? AbortSignal.timeout(20_000);
-    const connection = await raceFulfilled(addrs.map((addr) => this.node.dial(multiaddr(addr), { signal: dialSignal })));
+    // raceFulfilled only ever surfaces one generic "every dial attempt failed" once
+    // ALL candidates have rejected - logging each address's own failure reason here
+    // (most commonly a TransportUnavailableError when nothing dialing has a
+    // transport registered for that address's shape at all, which rejects near-
+    // instantly with no real network attempt - vs. a genuine connection failure,
+    // which takes real time) is the only way to tell those apart from devtools.
+    const connection = await raceFulfilled(
+      addrs.map((addr) =>
+        this.node.dial(multiaddr(addr), { signal: dialSignal }).catch((err: unknown) => {
+          console.warn(`[helix] [QR] dial failed for ${addr}: ${err instanceof Error ? err.message : err}`);
+          throw err;
+        }),
+      ),
+    );
     const peerId = connection.remotePeer.toString();
 
     const genomeForPeer = (): string | undefined =>

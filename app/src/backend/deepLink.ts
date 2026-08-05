@@ -1,4 +1,8 @@
-import { isTauri } from "./platform";
+// Explicit .js extension for dual-tsconfig compatibility - this file is imported by
+// both app's own bundler-resolution tsconfig and the root NodeNext-resolution one
+// (test/backend/deepLink.test.ts), and only the latter enforces this - same reasoning
+// as ipfsPersistence.ts's identical relative-import extensions.
+import { isTauri } from "./platform.js";
 
 /** helix://bootstrap?addr=<url-encoded-multiaddr> - lets someone tap a link (from the
  *  relay's own webpage - see src/cli/relay.ts's --web-port, or a QR scan) to jump
