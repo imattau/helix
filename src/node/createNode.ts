@@ -96,6 +96,31 @@ const PUBLIC_DHT_INIT: KadDHTInit = {
   peerInfoMapper: removePrivateAddressesMapper,
 };
 
+/**
+ * circuit-relay-v2's own per-reservation defaults (128KB data / 2 minutes duration -
+ * see its constants.js) are budgeted for a relayed connection just proving liveness
+ * (a handshake, an occasional ping), not for actually running a Helix peer connection
+ * through: the noise handshake, identify, gossipsub mesh traffic, AND the directory
+ * sync request/response (src/node/directory.ts - up to DIRECTORY_MAX_GENOMES=500
+ * genomes with DIRECTORY_RECENT_POSTS_PER_GENOME=20 posts each in the worst case) all
+ * draw from that one shared budget per relayed connection. Confirmed hands-on: a QR-
+ * paired peer connecting through a relay left at these library defaults gets stuck at
+ * "Connected - waiting for their profile" forever, because the directory stream
+ * either can't open or gets cut mid-transfer once the shared byte/time budget from
+ * earlier traffic on that connection is already spent - silently, since
+ * requestDirectoryFrom's failure path (client.ts) only logs a console warning. Raised
+ * generously (a relay's whole job here is text-sized protocol traffic, never
+ * attachment bytes - those go through Helia's own bitswap/transports, never this
+ * relay) rather than tuned to a measured worst case, since the cost of a too-low
+ * limit (silently broken peer connections) is far worse than the cost of a too-high
+ * one (a slightly longer-lived relayed connection using a bit more of the relay's
+ * bandwidth).
+ */
+const RELAY_RESERVATION_LIMITS = {
+  defaultDataLimit: BigInt(1 << 24), // 16 MiB
+  defaultDurationLimit: 10 * 60 * 1000, // 10 minutes
+};
+
 export async function createHelixNode(opts: {
   port: number;
   privateKey: Ed25519PrivateKey;
@@ -215,7 +240,7 @@ export async function createHelixNode(opts: {
           dht: kadDHT(PUBLIC_DHT_INIT),
           autoNAT: autoNAT(),
           dcutr: dcutr(),
-          relay: circuitRelayServer(),
+          relay: circuitRelayServer({ reservations: RELAY_RESERVATION_LIMITS }),
         },
       });
     }
