@@ -10,6 +10,15 @@ import { isPublicDiscoveryEnabled } from "../backend/identity";
  *  polls, same as any other "wait for an async thing with no notify() hook" spot. */
 const ADDR_POLL_MS = 2_000;
 
+/** getOwnConnectAddrs() can return one circuit-relay address per observed local
+ *  network interface (WiFi + hotspot + VPN, etc.) plus any raw /tcp/ ones - each
+ *  multiaddr is long (a relay peer ID plus our own), and encodeQrPairingPayload's
+ *  JSON wrapping adds more on top; a handful of them together can exceed a QR
+ *  code's ~2.9KB max capacity ("The amount of data is too big to be stored in a QR
+ *  Code"). dialPeerAddrs races every candidate and only needs one to succeed, so
+ *  capping well below that ceiling costs nothing but headroom. */
+const MAX_QR_ADDRS = 4;
+
 /**
  * Direct peer pairing via QR code - skips the public DHT's discovery timing/luck
  * entirely by encoding a specific peer's dialable address(es) (see client.ts's
@@ -85,6 +94,7 @@ export function QrPairingScreen({
 function ShowCode({ client }: { client: ReturnType<typeof useHelixState> }) {
   const [addrs, setAddrs] = useState<string[]>(() => client.getOwnConnectAddrs());
   const [qrDataUrl, setQrDataUrl] = useState<string>();
+  const [qrError, setQrError] = useState<string>();
 
   useEffect(() => {
     if (addrs.length > 0) return;
@@ -97,7 +107,16 @@ function ShowCode({ client }: { client: ReturnType<typeof useHelixState> }) {
       setQrDataUrl(undefined);
       return;
     }
-    QRCode.toDataURL(encodeQrPairingPayload(addrs), { width: 280, margin: 1 }).then(setQrDataUrl);
+    setQrError(undefined);
+    // errorCorrectionLevel "L" (not the library's default "M") maximizes raw
+    // capacity - see MAX_QR_ADDRS's doc comment for why every byte here matters.
+    QRCode.toDataURL(encodeQrPairingPayload(addrs.slice(0, MAX_QR_ADDRS)), {
+      width: 280,
+      margin: 1,
+      errorCorrectionLevel: "L",
+    })
+      .then(setQrDataUrl)
+      .catch(() => setQrError("Couldn't generate a code - too many addresses to encode."));
   }, [addrs]);
 
   if (!isPublicDiscoveryEnabled()) {
@@ -106,6 +125,10 @@ function ShowCode({ client }: { client: ReturnType<typeof useHelixState> }) {
         Enable public discovery in Settings to get a connectable code.
       </p>
     );
+  }
+
+  if (qrError) {
+    return <p className="rounded-2xl border border-border bg-surface p-6 text-center text-sm text-danger">{qrError}</p>;
   }
 
   if (!qrDataUrl) {
