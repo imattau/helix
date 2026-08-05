@@ -14,13 +14,17 @@ import {
   fetchAndVerifyAttachmentFromIpfs,
   publishAttachmentToIpfs,
   toDataUrl,
+  AttachmentVerificationError,
+  INLINE_MAX_BYTES,
 } from "@helix/api/attachment.js";
+import { CID } from "multiformats/cid";
 import { TOPICS } from "@helix/node/pubsubTopics.js";
 import {
   decodeGenesis,
   decodePost,
   decodeFollow,
   decodeIpfsAddr,
+  encodeIpfsAddr,
 } from "@helix/node/messages.js";
 import {
   buildDirectorySnapshot,
@@ -40,13 +44,36 @@ import { loadOrCreateIdentity, isPublicDiscoveryEnabled } from "./identity";
 import { createBrowserPolyPackAdapters } from "./polypackPersistence";
 import { SearchIndex } from "./searchIndex";
 import { isTauri } from "./platform";
+import { createPersistentIpfsStorage, loadOrCreateIpfsPrivateKey, type FileIoBlockstore } from "./ipfsPersistence";
+import {
+  isWebrtcAvailable,
+  webrtcTransport,
+  registerIncomingWebrtcSignals,
+  buildWebrtcMultiaddr,
+} from "./webrtcTransport";
 import type { Notification, Post, PostAttachment, User } from "../types";
+
+/** Public STUN only, no TURN - enough for NAT traversal between two peers that aren't
+ *  both behind symmetric/CGNAT-style NAT (the common residential/mobile case), but a
+ *  peer on a stricter network simply won't connect via this path; it still falls back
+ *  to relay for the main node and to the URL/single-source IPFS path for attachments,
+ *  same as before this existed. Standing up a TURN relay (bandwidth cost, its own
+ *  infrastructure) is a real option later but out of scope for this pass. */
+const WEBRTC_ICE_SERVERS: RTCIceServer[] = [
+  { urls: "stun:stun.l.google.com:19302" },
+  { urls: "stun:stun.cloudflare.com:3478" },
+];
 
 /** Candidate listen ports for TauriTcpTransport (see findAvailablePort there) - an
  *  arbitrary high, unassigned range; the first free one is used, so a second Helix
  *  instance on the same device (or anything else already bound to the first choice)
  *  doesn't prevent startup. */
 const TAURI_TCP_CANDIDATE_PORTS = [4737, 4738, 4739, 4740, 4741, 4742, 4743, 4744, 4745, 4746];
+
+/** Candidate listen ports for Helia's own real-TCP transport (heliaTcpTransport.ts) -
+ *  a distinct range from TAURI_TCP_CANDIDATE_PORTS above since both the main node and
+ *  Helia bind a listener in the same process and must not collide. */
+const HELIA_TCP_CANDIDATE_PORTS = [4747, 4748, 4749, 4750, 4751, 4752, 4753, 4754, 4755, 4756];
 
 export { SpamRejectedError };
 
@@ -150,6 +177,15 @@ export class HelixClient {
   private version = 0;
   /** Lazily-created real Helia node for attachment bytes - see getIpfsNode(). */
   private ipfsNodePromise?: Promise<IpfsNode>;
+  /** The raw FileIoBlockstore backing ipfsNodePromise, kept directly rather than
+   *  fished back out of Helia's own `.blockstore` (a wrapping BlockStorage with
+   *  pinning/GC semantics of its own, not the raw instance passed into createIpfsNode)
+   *  - needed to call FileIoBlockstore's own pin() (see buildAttachment). */
+  private ipfsBlockstorePromise?: Promise<FileIoBlockstore>;
+  /** Same namespace used for the main store's PolyPack adapters (identity.peerId) -
+   *  set once in doConnect(), read by getIpfsNode() so the IPFS node's own persisted
+   *  key/blockstore/datastore are scoped to this identity too. */
+  private identityNamespace?: string;
   /** IPFS peer IDs we've successfully dialed via the IPFS_ADDR gossipsub signal. */
   private dialedIpfsPeers = new Set<string>();
   /** Verified attachment bytes by hashHex, so the feed and thread views never refetch. */
@@ -192,7 +228,8 @@ export class HelixClient {
 
   private async doConnect(): Promise<void> {
     const identity = await loadOrCreateIdentity();
-    const adapters = await createBrowserPolyPackAdapters(identity.peerId.toString());
+    this.identityNamespace = identity.peerId.toString();
+    const adapters = await createBrowserPolyPackAdapters(this.identityNamespace);
     this.store = new MemoryStore({
       storeAdapter: adapters.storeAdapter,
       followGraphAdapter: adapters.followGraphAdapter,
@@ -220,6 +257,7 @@ export class HelixClient {
     this.node.services.pubsub.subscribe(TOPICS.DIRECTORY);
     this.node.services.pubsub.addEventListener("message", (evt) => this.handleMessage(evt));
     registerDirectoryHandler(this.node, this.store);
+    if (isWebrtcAvailable()) registerIncomingWebrtcSignals(this.node, WEBRTC_ICE_SERVERS);
 
     // Ask every peer we connect to (bootstrap or DHT-discovered) for its directory
     // exactly once - a fresh user's Discover is populated by this, not by waiting for
@@ -234,6 +272,7 @@ export class HelixClient {
         this.directoryRequestedPeers.delete(peerId);
         console.warn(`[helix] [DIRECTORY] request to ${peerId} failed: ${err instanceof Error ? err.message : err}`);
       });
+      this.announceIpfsAddr();
     });
 
     const bootstrap = import.meta.env.VITE_BOOTSTRAP_MULTIADDR;
@@ -391,14 +430,43 @@ export class HelixClient {
       });
   }
 
+  /** Best-effort: broadcasts this device's own Helia node's dialable multiaddrs (if
+   *  any - real once either createHeliaTcpTransport() (Tauri desktop/Android) or
+   *  isWebrtcAvailable() (browser tab/iOS) gave it a listen address; a plain
+   *  dial-out-only Helia node has nothing worth announcing, caught by the
+   *  multiaddrs.length check below). Fired on every peer:connect rather than once,
+   *  both because a fresh connection is exactly when a peer needs this and because
+   *  Helia is created lazily - the first few calls may have nothing to announce yet
+   *  until getIpfsNode() has actually resolved once. */
+  private announceIpfsAddr(): void {
+    this.getIpfsNode()
+      .then((ipfs) => {
+        const multiaddrs = ipfs.libp2p.getMultiaddrs().map((a: { toString(): string }) => a.toString());
+        if (multiaddrs.length === 0) return;
+        return this.node.services.pubsub.publish(
+          TOPICS.IPFS_ADDR,
+          encodeIpfsAddr({ peerId: ipfs.libp2p.peerId.toString(), multiaddrs }),
+        );
+      })
+      .catch((err) => {
+        console.warn("[helix] [IPFS] failed to announce own IPFS address", err instanceof Error ? err.message : err);
+      });
+  }
+
   /** Mirrors the CLI's IPFS rendezvous (src/cli/peer.ts): a peer announces its separate
    *  Helia node's multiaddrs over gossipsub so we can dial it directly for bitswap.
-   *  A browser can only dial out (no raw TCP), so we filter to the WebSocket addresses
-   *  the webview can actually reach and skip anything already dialed. Best-effort:
-   *  attachment URL fetching never depends on this succeeding. */
+   *  Accepts a WebSocket address (the webview can always dial out), a plain `/tcp/`
+   *  one (heliaTcpTransport.ts - only actually dialable if this device also has the
+   *  Tauri TCP bridge, checked inside the transport itself), or a `/webrtc/` one
+   *  (webrtcTransport.ts - only actually dialable if this device supports WebRTC) -
+   *  a failed dial here just falls through to the catch below, best-effort like
+   *  everything else in this method - and skips anything already dialed. Best-effort
+   *  throughout: attachment URL fetching never depends on this succeeding. */
   private dialIpfsPeer(msg: { peerId: string; multiaddrs: string[] }): void {
     if (this.dialedIpfsPeers.has(msg.peerId)) return;
-    const dialable = msg.multiaddrs.find((addr) => addr.includes("/ws") || addr.includes("/wss"));
+    const dialable = msg.multiaddrs.find(
+      (addr) => addr.includes("/ws") || addr.includes("/wss") || addr.includes("/webrtc/") || addr.includes("/tcp/"),
+    );
     if (!dialable) return;
     this.dialedIpfsPeers.add(msg.peerId);
     this.getIpfsNode()
@@ -410,13 +478,83 @@ export class HelixClient {
       });
   }
 
+  /** A real TCP listen address for Helia on a Tauri webview (desktop or Android),
+   *  reusing the exact same @kuyoonjo/tauri-plugin-tcp bridge as the main node's own
+   *  createNativeTcpTransport() above - a Tauri host process can already open raw
+   *  sockets, so Helia doesn't need WebRTC's NAT-traversal/signaling machinery at all
+   *  on these platforms. undefined for a literal browser tab (no IPC bridge to a
+   *  native host) or if every candidate port is somehow unavailable, in which case
+   *  getIpfsNode() falls back to WebRTC where available. */
+  private async createHeliaTcpTransport() {
+    if (!isTauri()) return undefined;
+    try {
+      const { heliaTauriTcp, findAvailablePort, multiaddr: multiaddrHelia } = await import("./heliaTcpTransport");
+      const listenPort = await findAvailablePort(HELIA_TCP_CANDIDATE_PORTS);
+      return {
+        transport: heliaTauriTcp(),
+        listenAddress: multiaddrHelia(`/ip4/0.0.0.0/tcp/${listenPort}`).toString(),
+      };
+    } catch (err) {
+      console.warn("[helix] Helia TCP transport unavailable - falling back to webrtc/dial-out-only", err);
+      return undefined;
+    }
+  }
+
   /** Lazily creates the single browser Helia node, reusing the protocol's lean
    *  createIpfsNode() (no bootstrap discovery, just identify - see src/ipfs/node.ts).
-   *  A browser node can dial out (ws/wss/webrtc) but never accept inbound connections,
-   *  so it's purely a fetch/host client, never a rendezvous point. */
+   *  Can always dial out (ws/wss); can also now accept inbound connections:
+   *  - On a Tauri webview (desktop or Android), via a real TCP listener
+   *    (heliaTcpTransport.ts) - the same raw-socket bridge already built for the main
+   *    node, so no NAT-traversal/signaling dance is needed at all.
+   *  - Otherwise, where isWebrtcAvailable() (see webrtcTransport.ts) - a literal
+   *    browser tab or iOS, neither of which has that IPC bridge - by signaling
+   *    through the main Helix node (already connected peer-to-peer) to negotiate a
+   *    direct RTCDataChannel, no relay or raw socket needed.
+   *  Where neither applies (Linux desktop's WebKitGTK has no RTCPeerConnection, and
+   *  isn't reached here since isTauri() is true there and TCP is tried first), this
+   *  stays exactly what it always was: a dial-out-only fetch/host client. Reseeding
+   *  (see fetchAttachmentBytes) is what makes any of these cases worth having
+   *  persistent storage for.
+   *
+   *  Persisted key + FileIO-backed blockstore/datastore (ipfsPersistence.ts) so
+   *  published/fetched attachment bytes survive a restart instead of the in-memory
+   *  default - same identity-namespaced pattern as the main store's PolyPack adapters. */
   getIpfsNode(): Promise<IpfsNode> {
-    if (!this.ipfsNodePromise) this.ipfsNodePromise = createIpfsNode();
+    if (!this.ipfsNodePromise) {
+      const namespace = this.identityNamespace ?? "anonymous";
+      const storagePromise = createPersistentIpfsStorage(namespace);
+      this.ipfsBlockstorePromise = storagePromise.then((s) => s.blockstore);
+      this.ipfsNodePromise = (async () => {
+        const [identity, storage, tcp] = await Promise.all([
+          loadOrCreateIpfsPrivateKey(namespace),
+          storagePromise,
+          this.createHeliaTcpTransport(),
+        ]);
+        const transport = tcp
+          ? { extraTransports: [tcp.transport], listenAddresses: [tcp.listenAddress] }
+          : isWebrtcAvailable()
+            ? {
+                extraTransports: [webrtcTransport(this.node, WEBRTC_ICE_SERVERS)],
+                listenAddresses: [buildWebrtcMultiaddr(this.node.peerId.toString(), identity.peerId).toString()],
+              }
+            : undefined;
+        return createIpfsNode({
+          privateKey: identity.privateKey,
+          blockstore: storage.blockstore,
+          datastore: storage.datastore,
+          ...transport,
+        });
+      })();
+    }
     return this.ipfsNodePromise;
+  }
+
+  /** The raw FileIoBlockstore backing getIpfsNode(), for pinning this device's own
+   *  published attachments (see buildAttachment) - see the field doc comment above
+   *  for why this isn't fished out of the Helia node itself. */
+  private getIpfsBlockstore(): Promise<FileIoBlockstore> {
+    void this.getIpfsNode(); // ensures ipfsBlockstorePromise is initialized
+    return this.ipfsBlockstorePromise!;
   }
 
   /** True for a post's current (non-superseded) version - see the recombination handling. */
@@ -629,8 +767,7 @@ export class HelixClient {
   }
 
   /** Attachment to attach to a new post. `ipfsCid` is opt-in: if the caller already
-   *  published to their own IPFS node (see getIpfsNode), it travels with the post and
-   *  lets bitswap peers fetch the bytes; the data: URL is always the reliable path. */
+   *  published to their own IPFS node (see getIpfsNode), it's passed through as-is. */
   async publish(
     content: string,
     parentPostId?: string,
@@ -648,34 +785,52 @@ export class HelixClient {
     return this.toPost(post);
   }
 
-  /** Fills in `ipfsCid` by publishing bytes to our own Helia node when the caller
-   *  didn't already - best-effort (a browser node can't be dialed, but peers that
-   *  dial *us* over WebRTC can still bitswap it), never blocks publishing on IPFS
-   *  being reachable. */
+  /** Attachments at or under INLINE_MAX_BYTES get a data: URL - fast, and needs no
+   *  network at all, but every peer that ever receives the post downloads and
+   *  permanently stores it, so it's reserved for small media. Above that, only
+   *  ipfsCid is set (unless the caller pre-supplied one): the post carries just a
+   *  reference, and this device pins its own copy (see FileIoBlockstore's pin/evict
+   *  doc comment) so the author stays a durable source regardless of local eviction
+   *  pressure from other peers' content it's reseeded (see fetchAttachmentBytes).
+   *
+   *  A large attachment whose IPFS publish fails has no fallback at all - it would be
+   *  a permanently unfetchable reference, including to its own author - so that's a
+   *  hard failure here rather than the best-effort warning a small (inlined) one gets. */
   private async buildAttachment(
     attachment?: { bytes: Uint8Array; mimeType: string; ipfsCid?: string },
-  ): Promise<{ bytes: Uint8Array; mimeType: string; sourceUrl: string; ipfsCid?: string } | undefined> {
+  ): Promise<{ bytes: Uint8Array; mimeType: string; sourceUrl?: string; ipfsCid?: string } | undefined> {
     if (!attachment) return undefined;
+    const inline = attachment.bytes.length <= INLINE_MAX_BYTES;
     const base = {
       bytes: attachment.bytes,
       mimeType: attachment.mimeType,
-      sourceUrl: toDataUrl(attachment.bytes, attachment.mimeType),
+      sourceUrl: inline ? toDataUrl(attachment.bytes, attachment.mimeType) : undefined,
       ipfsCid: attachment.ipfsCid,
     };
     if (attachment.ipfsCid) return base;
     try {
-      const ipfs = await this.getIpfsNode();
-      return { ...base, ipfsCid: await publishAttachmentToIpfs(ipfs, attachment.bytes) };
+      const [ipfs, blockstore] = await Promise.all([this.getIpfsNode(), this.getIpfsBlockstore()]);
+      const ipfsCid = await publishAttachmentToIpfs(ipfs, attachment.bytes);
+      await blockstore.pin(ipfsCid);
+      return { ...base, ipfsCid };
     } catch (err) {
+      if (!inline) {
+        const message = err instanceof Error ? err.message : String(err);
+        throw new Error(
+          `Failed to publish attachment: IPFS is unreachable and the attachment is too large to inline (${message})`,
+        );
+      }
       console.warn("[helix] [IPFS] failed to publish attachment to local IPFS node - data: URL only", err);
       return base;
     }
   }
 
-  /** Fetches and verifies an attachment's bytes (URL transport first, real IPFS as a
-   *  fallback when an ipfsCid exists and a peer was dialed), caching verified bytes by
-   *  hashHex so the feed and thread views never refetch. Throws on verification failure
-   *  or an unreachable source - callers render the error state. */
+  /** Fetches and verifies an attachment's bytes, caching by hashHex so the feed and
+   *  thread views never refetch. `sourceUrl` (present only for small/inlined
+   *  attachments, or pre-existing posts from before the size threshold existed) is
+   *  always tried first when present - it's instant and needs no network. Otherwise
+   *  (or if that fails) falls to real IPFS via `ipfsCid`, when reachable. Throws on
+   *  verification failure or an unreachable source - callers render the error state. */
   async fetchAttachmentBytes(attachment: PostAttachment): Promise<Uint8Array> {
     const cached = this.attachmentCache.get(attachment.hashHex);
     if (cached) return cached;
@@ -689,26 +844,52 @@ export class HelixClient {
     };
 
     let bytes: Uint8Array;
-    try {
-      bytes = await fetchAndVerifyAttachment(protocolAttachment);
-    } catch (urlErr) {
-      if (attachment.ipfsCid && this.dialedIpfsPeers.size > 0) {
-        try {
-          const ipfs = await this.getIpfsNode();
-          bytes = await fetchAndVerifyAttachmentFromIpfs(ipfs, protocolAttachment);
-        } catch (ipfsErr) {
-          console.warn(
-            `[helix] [ATTACHMENT] URL fetch failed (${urlErr}) and IPFS fallback also failed (${ipfsErr})`,
-          );
-          throw urlErr;
-        }
-      } else {
-        throw urlErr;
+    if (attachment.sourceUrl) {
+      try {
+        bytes = await fetchAndVerifyAttachment(protocolAttachment);
+      } catch (urlErr) {
+        bytes = await this.fetchAttachmentViaIpfs(protocolAttachment, urlErr);
       }
+    } else {
+      bytes = await this.fetchAttachmentViaIpfs(protocolAttachment);
     }
 
     this.attachmentCache.set(attachment.hashHex, bytes);
+    void this.reseedAttachment(attachment.ipfsCid, bytes);
     return bytes;
+  }
+
+  private async fetchAttachmentViaIpfs(attachment: Attachment, urlErr?: unknown): Promise<Uint8Array> {
+    if (!attachment.ipfsCid || this.dialedIpfsPeers.size === 0) {
+      throw urlErr ?? new AttachmentVerificationError("fetchAttachmentBytes: no sourceUrl, and no reachable IPFS peer");
+    }
+    try {
+      const ipfs = await this.getIpfsNode();
+      return await fetchAndVerifyAttachmentFromIpfs(ipfs, attachment);
+    } catch (ipfsErr) {
+      if (urlErr) console.warn(`[helix] [ATTACHMENT] URL fetch failed (${urlErr}) and IPFS fallback also failed (${ipfsErr})`);
+      throw urlErr ?? ipfsErr;
+    }
+  }
+
+  /** Best-effort: after fetching an attachment via *either* transport, make sure this
+   *  device's own persistent blockstore has the bytes too, so it becomes a source, not
+   *  just a sink - reading a post shouldn't be a one-way trip. A bitswap-fetched block
+   *  already lands in the local blockstore automatically as a side effect of the fetch
+   *  itself; this only adds something for the sourceUrl (data: URL) path, which never
+   *  otherwise touches the blockstore. Never lets a reseed failure affect the read that
+   *  triggered it. See getIpfsNode()'s doc comment for what reseeding can/can't achieve
+   *  without a dialable transport of this device's own. */
+  private async reseedAttachment(ipfsCid: string | undefined, bytes: Uint8Array): Promise<void> {
+    if (!ipfsCid) return;
+    try {
+      const blockstore = await this.getIpfsBlockstore();
+      if (await blockstore.has(CID.parse(ipfsCid))) return;
+      const ipfs = await this.getIpfsNode();
+      await publishAttachmentToIpfs(ipfs, bytes);
+    } catch {
+      // best-effort only
+    }
   }
 
   /** Verifies and returns an attachment's bytes as a display-ready data: URL. */

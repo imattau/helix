@@ -6,6 +6,7 @@ import {
   fetchAndVerifyAttachmentFromIpfs,
   AttachmentVerificationError,
   toDataUrl,
+  INLINE_MAX_BYTES,
 } from '../../src/api/attachment.js';
 import { createIpfsNode } from '../../src/ipfs/node.js';
 import { sha256 } from '../../src/crypto/hash.js';
@@ -21,7 +22,21 @@ function attachmentFor(bytes: Uint8Array, mimeType = 'text/markdown'): Attachmen
   };
 }
 
+describe('INLINE_MAX_BYTES', () => {
+  it('is a small, sane cap - large enough for a thumbnail, far too small for full-size media', () => {
+    expect(INLINE_MAX_BYTES).toBeGreaterThan(0);
+    expect(INLINE_MAX_BYTES).toBeLessThan(1024 * 1024); // well under 1MB
+  });
+});
+
 describe('fetchAndVerifyAttachment', () => {
+  it('rejects an attachment with no sourceUrl instead of calling fetch(undefined)', async () => {
+    const bytes = new TextEncoder().encode('no url here');
+    const attachment: Attachment = { ...attachmentFor(bytes), sourceUrl: undefined };
+
+    await expect(fetchAndVerifyAttachment(attachment)).rejects.toThrow(AttachmentVerificationError);
+  });
+
   it('fetches and returns bytes that match the claimed hash and size', async () => {
     const bytes = new TextEncoder().encode('# Hello\n\nThis is a long-form markdown post.');
     const attachment = attachmentFor(bytes);

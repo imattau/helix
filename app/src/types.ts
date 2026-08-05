@@ -33,7 +33,7 @@ export interface PostAttachment {
   hashHex: string;
   mimeType: string;
   sizeBytes: number;
-  sourceUrl: string;
+  sourceUrl?: string;
   ipfsCid?: string;
 }
 

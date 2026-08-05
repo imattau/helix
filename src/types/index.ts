@@ -23,15 +23,23 @@ export interface HLCTimestamp {
 
 /**
  * A content-addressed reference to media/long-form content hosted outside the gossiped
- * post itself — see src/api/attachment.ts. `sourceUrl` is a hint only; `hashHex` is the
- * source of truth a reader verifies against before trusting fetched bytes.
+ * post itself — see src/api/attachment.ts. `sourceUrl`/`ipfsCid` are hints only;
+ * `hashHex` is the source of truth a reader verifies against before trusting fetched
+ * bytes, whichever transport actually served them.
+ *
+ * `sourceUrl` is present only for attachments at or under INLINE_MAX_BYTES (see
+ * attachment.ts) — inlining a full data: URL for every attachment, regardless of size,
+ * meant every peer that ever receives the post downloads and permanently stores the
+ * full bytes whether or not anyone reads them, with no eviction. Above the threshold,
+ * `sourceUrl` is omitted and `ipfsCid` (real IPFS/bitswap) is the only retrieval path —
+ * genuinely pull-based, and readers reseed what they fetch (see client.ts), so
+ * availability doesn't depend solely on the original publisher staying online.
  */
 export interface Attachment {
   hashHex: string;
   mimeType: string;
   sizeBytes: number;
-  sourceUrl: string;
-  /** Optional real-IPFS retrieval path, additive to sourceUrl — see src/ipfs/node.ts. */
+  sourceUrl?: string;
   ipfsCid?: string;
 }
 

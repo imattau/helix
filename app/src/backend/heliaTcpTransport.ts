@@ -3,51 +3,51 @@ import { onTcpEvent, localIpv4Addresses, toUint8Array, findAvailablePort } from 
 import { pushable, type Pushable } from "it-pushable";
 import { TypedEventEmitter } from "main-event";
 import { logger } from "@libp2p/logger";
-import { multiaddr, type Multiaddr } from "@multiformats/multiaddr";
+// v13, not the top-level (v12) @multiformats/multiaddr - Helia's own nested libp2p
+// stack (@libp2p/interface v3) expects v13-compatible Multiaddr instances, same
+// reasoning as webrtcTransport.ts's own v13 import.
+import { multiaddr, type Multiaddr } from "@multiformats/multiaddr-v13";
 import { TCP as TCPMatcher } from "@multiformats/multiaddr-matcher";
 import { ipPortToMultiaddr } from "@libp2p/utils/ip-port-to-multiaddr";
 import { transportSymbol } from "@libp2p/interface";
-import type {
-  CreateListenerOptions,
-  DialTransportOptions,
-  Listener,
-  ListenerEvents,
-  Transport,
-} from "@libp2p/interface";
-import type { Connection, MultiaddrConnection } from "@libp2p/interface";
+import type { Uint8ArrayList } from "uint8arraylist";
 
 /**
- * A libp2p Transport backed by @kuyoonjo/tauri-plugin-tcp - a real TCP socket, unlike
- * webSockets()/circuitRelayTransport(), which are the only options available in a
- * literal browser tab (see the "browser" NOTE in src/node/createNode.ts). A Tauri
- * webview (desktop or Android; the plugin doesn't support iOS) has a native Rust host
- * process that CAN open raw sockets, even though the webview's own JS still can't -
- * this bridges that gap over Tauri's IPC.
+ * A real-TCP libp2p Transport for Helia, reusing the exact same
+ * @kuyoonjo/tauri-plugin-tcp bridge (via tauriTcpCore.ts) already built for the main
+ * Helix node's tauriTcpTransport.ts. On a Tauri desktop/Android build, Helia doesn't
+ * need WebRTC's NAT-traversal machinery at all: the webview's native Rust host process
+ * can already open raw sockets, same as the main node - see tauriTcpTransport.ts's own
+ * doc comment. WebRTC (webrtcTransport.ts) remains the only option for a literal
+ * browser tab or iOS, neither of which has this IPC bridge to a native host.
  *
- * Only used when isTauri() (see platform.ts) - never constructed for a plain browser
- * tab, which has no IPC bridge to a native host at all.
- *
- * One real limitation carried over from the plugin itself: `bind()`'s success event
- * echoes back the endpoint string it was *asked* to bind, not the OS-resolved one, so
- * there's no way to learn an OS-assigned ephemeral port (`/tcp/0`) through this API.
- * Callers must pick (and retry across, on EADDRINUSE) an explicit port - see
- * client.ts's connect().
+ * Every signature here that crosses into Helia's own v3-pinned @libp2p/interface
+ * transport machinery is typed loosely (`any`/`unknown`/local Loose* interfaces)
+ * rather than against this project's top-level (v2-pinned, for gossipsub
+ * compatibility) copies of Transport/Listener/MultiaddrConnection - same reasoning and
+ * pattern as webrtcTransport.ts. The object shapes still fully satisfy the real
+ * interface-transport spec at runtime.
  */
 
+interface LooseMultiaddrConnection {
+  sink: (source: AsyncIterable<Uint8Array | Uint8ArrayList>) => Promise<void>;
+  source: AsyncIterable<Uint8Array>;
+  remoteAddr: Multiaddr;
+  timeline: { open: number; close?: number };
+  close: () => Promise<void>;
+  abort: (err: Error) => void;
+  log: unknown;
+}
+
 /** Builds a MultiaddrConnection around a single (already-connected) socket `id` -
- *  shared by both the dialer and the listener's per-peer inbound connections, which
- *  differ only in how the underlying socket was established and how it's closed. */
+ *  shared by both the dialer and the listener's per-peer inbound connections, same
+ *  structure as tauriTcpTransport.ts's toMultiaddrConnection(). */
 function toMultiaddrConnection(opts: {
   id: string;
-  /** The plugin's per-peer `addr` for a listener's accepted connection - `send()`
-   *  needs this to route to the right accepted socket (see tauri-plugin-tcp's Rust
-   *  side: a bound socket tracks accepted peers in a map keyed by this). Omitted for
-   *  a dialed (client-mode) connection, which has exactly one peer. */
   addr?: string;
   remoteAddr: Multiaddr;
-  direction: "inbound" | "outbound";
   onClose: () => void;
-}): MultiaddrConnection {
+}): LooseMultiaddrConnection {
   const source: Pushable<Uint8Array> = pushable<Uint8Array>();
   const unsubscribe = onTcpEvent((payload) => {
     if (payload.id !== opts.id) return;
@@ -61,7 +61,7 @@ function toMultiaddrConnection(opts: {
   });
 
   let closed = false;
-  const maConn: MultiaddrConnection = {
+  const maConn: LooseMultiaddrConnection = {
     async sink(streamSource) {
       try {
         for await (const chunk of streamSource) {
@@ -86,24 +86,43 @@ function toMultiaddrConnection(opts: {
       source.end(err);
       void maConn.close();
     },
-    log: logger(`helix:tauri-tcp:${opts.direction}`),
+    log: logger("helix:helia-tcp"),
   };
   return maConn;
 }
 
-class TauriTcpListener extends TypedEventEmitter<ListenerEvents> implements Listener {
+function tcpAddrStringToMultiaddr(addr: string): Multiaddr {
+  const lastColon = addr.lastIndexOf(":");
+  const ip = addr.slice(0, lastColon);
+  const port = addr.slice(lastColon + 1);
+  return ipPortToMultiaddr(ip, port) as unknown as Multiaddr;
+}
+
+/** v13's Multiaddr dropped toOptions() (present on v12, used by tauriTcpTransport.ts) -
+ *  extract the same {host, port} shape from getComponents() instead. */
+function toHostPort(ma: Multiaddr): { host: string; port: number } {
+  const components = ma.getComponents();
+  const host = components.find((c) => c.name === "ip4" || c.name === "ip6")?.value;
+  const port = components.find((c) => c.name === "tcp")?.value;
+  if (host === undefined || port === undefined) {
+    throw new Error(`helia-tcp: cannot extract host/port from ${ma.toString()}`);
+  }
+  return { host, port: Number(port) };
+}
+
+class HeliaTcpListener extends TypedEventEmitter<Record<"listening" | "close" | "error", CustomEvent>> {
   private readonly id = crypto.randomUUID();
   private boundPort: number | undefined;
   private localIps: string[] = [];
-  private readonly peers = new Map<string, MultiaddrConnection>();
+  private readonly peers = new Map<string, LooseMultiaddrConnection>();
   private unsubscribe?: () => void;
 
-  constructor(private readonly options: CreateListenerOptions) {
+  constructor(private readonly options: { upgrader: { upgradeInbound: (maConn: unknown) => Promise<unknown> } }) {
     super();
   }
 
   async listen(ma: Multiaddr): Promise<void> {
-    const { port, host } = ma.toOptions();
+    const { port, host } = toHostPort(ma);
     this.boundPort = port;
     this.localIps = await localIpv4Addresses();
 
@@ -125,7 +144,6 @@ class TauriTcpListener extends TypedEventEmitter<ListenerEvents> implements List
       id: this.id,
       addr,
       remoteAddr,
-      direction: "inbound",
       onClose: () => this.peers.delete(addr),
     });
     this.peers.set(addr, maConn);
@@ -136,7 +154,7 @@ class TauriTcpListener extends TypedEventEmitter<ListenerEvents> implements List
 
   getAddrs(): Multiaddr[] {
     if (this.boundPort === undefined) return [];
-    return this.localIps.map((ip) => ipPortToMultiaddr(ip, this.boundPort as number));
+    return this.localIps.map((ip) => ipPortToMultiaddr(ip, this.boundPort as number) as unknown as Multiaddr);
   }
 
   updateAnnounceAddrs(): void {}
@@ -150,20 +168,18 @@ class TauriTcpListener extends TypedEventEmitter<ListenerEvents> implements List
   }
 }
 
-function tcpAddrStringToMultiaddr(addr: string): Multiaddr {
-  const lastColon = addr.lastIndexOf(":");
-  const ip = addr.slice(0, lastColon);
-  const port = addr.slice(lastColon + 1);
-  return ipPortToMultiaddr(ip, port);
+interface LooseDialOptions {
+  signal: AbortSignal;
+  upgrader: { upgradeOutbound: (maConn: unknown, options: unknown) => Promise<unknown> };
 }
 
-export function tauriTcp(): () => Transport {
+export function heliaTauriTcp(): () => unknown {
   return () => ({
     [transportSymbol]: true,
-    [Symbol.toStringTag]: "@helix/tauri-tcp",
+    [Symbol.toStringTag]: "@helix/helia-tcp",
 
-    async dial(ma: Multiaddr, options: DialTransportOptions): Promise<Connection> {
-      const { port, host } = ma.toOptions();
+    async dial(ma: Multiaddr, options: LooseDialOptions): Promise<unknown> {
+      const { port, host } = toHostPort(ma);
       const id = crypto.randomUUID();
       const endpoint = `${host}:${port}`;
 
@@ -175,12 +191,12 @@ export function tauriTcp(): () => Transport {
             resolve();
           } else if (payload.event.disconnect !== undefined) {
             unsubscribe();
-            reject(new Error(`tauri-tcp: ${endpoint} disconnected before connecting`));
+            reject(new Error(`helia-tcp: ${endpoint} disconnected before connecting`));
           }
         });
         options.signal.addEventListener("abort", () => {
           unsubscribe();
-          reject(new Error("tauri-tcp: dial aborted"));
+          reject(new Error("helia-tcp: dial aborted"));
         });
       });
 
@@ -190,7 +206,6 @@ export function tauriTcp(): () => Transport {
       const maConn = toMultiaddrConnection({
         id,
         remoteAddr: ma,
-        direction: "outbound",
         onClose: () => {
           void disconnect(id).catch(() => {});
         },
@@ -204,22 +219,19 @@ export function tauriTcp(): () => Transport {
       }
     },
 
-    createListener(options: CreateListenerOptions): Listener {
-      return new TauriTcpListener(options);
+    createListener(options: { upgrader: { upgradeInbound: (maConn: unknown) => Promise<unknown> } }): HeliaTcpListener {
+      return new HeliaTcpListener(options);
     },
 
     listenFilter(multiaddrs: Multiaddr[]): Multiaddr[] {
-      return multiaddrs.filter((ma) => TCPMatcher.exactMatch(ma));
+      return multiaddrs.filter((ma) => TCPMatcher.exactMatch(ma as unknown as Parameters<typeof TCPMatcher.exactMatch>[0]));
     },
 
     dialFilter(multiaddrs: Multiaddr[]): Multiaddr[] {
-      return multiaddrs.filter((ma) => TCPMatcher.exactMatch(ma));
+      return multiaddrs.filter((ma) => TCPMatcher.exactMatch(ma as unknown as Parameters<typeof TCPMatcher.exactMatch>[0]));
     },
   });
 }
 
-/** Re-exported for client.ts's getOwnConnectAddrs()/multiaddr construction and
- *  findAvailablePort's port-probing - both now live in tauriTcpCore.ts, shared with
- *  heliaTcpTransport.ts, but re-exported here too so existing importers of this file
- *  don't need to change. */
+/** Re-exported for client.ts's getIpfsNode()/multiaddr construction. */
 export { multiaddr, findAvailablePort };

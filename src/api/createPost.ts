@@ -29,9 +29,9 @@ export interface CreatePostOptions {
   content: string;
   parentPostId?: string;
   /** Media/long-form content hosted outside the gossiped post - see src/api/attachment.ts.
-   * `ipfsCid` is opt-in and passed through as-is if the caller already published to IPFS
-   * themselves (createPost stays IPFS-unaware, same as it never validates sourceUrl). */
-  attachment?: { bytes: Uint8Array; mimeType: string; sourceUrl: string; ipfsCid?: string };
+   * `sourceUrl`/`ipfsCid` are opt-in and passed through as-is if the caller already built
+   * them (createPost stays IPFS-unaware, same as it never validates sourceUrl). */
+  attachment?: { bytes: Uint8Array; mimeType: string; sourceUrl?: string; ipfsCid?: string };
   /** "Edit" an earlier post by the same author - see the recombination handling below.
    * Mutually exclusive with `parentPostId`: the new post's position (parentPostId/writhe)
    * is derived from the target post being recombined, not chosen by the caller. */

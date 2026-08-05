@@ -8,6 +8,7 @@ import * as json from 'multiformats/codecs/json';
 import { sha512 } from 'multiformats/hashes/sha2';
 import { MemoryBlockstore } from 'blockstore-core';
 import { MemoryDatastore } from 'datastore-core';
+import type { HeliaInit } from 'helia';
 
 /** createHelia()'s declared return type doesn't reflect that it's always libp2p-backed internally - see @helia/libp2p's HeliaWithLibp2p. */
 export type IpfsNode = Helia & HeliaWithLibp2p;
@@ -46,21 +47,61 @@ export type IpfsNode = Helia & HeliaWithLibp2p;
  * above - so importing tcp()/webSockets()/etc. ourselves here would silently resolve
  * to the wrong major version and fail to typecheck against Helia's own types).
  */
-export async function createIpfsNode(): Promise<IpfsNode> {
+export async function createIpfsNode(opts: {
+  /** A stable Ed25519 keypair, so this node's PeerId survives restarts instead of a
+   *  fresh random one every time - lets other peers recognize "the same IPFS peer"
+   *  across sessions (matters once reseeding makes more than one peer worth
+   *  recognizing - see app/src/backend/ipfsPersistence.ts). Cast past the structural
+   *  mismatch with Helia's own nested @libp2p/interface v3 typing (same reasoning as
+   *  the libp2pOptions cast below) - the underlying Ed25519PrivateKey shape is
+   *  identical across both. Defaults to a fresh random key (this function's original
+   *  behavior) when omitted, matching the CLI/test usage that has no need to persist
+   *  one. */
+  privateKey?: unknown;
+  /** Durable block storage, so bytes this node has published or fetched (and reseeds -
+   *  see fetchAndVerifyAttachmentFromIpfs) survive a restart instead of vanishing with
+   *  the in-memory default. Typed `unknown` - our top-level interface-blockstore
+   *  resolves to a different (structurally identical but nominally distinct,
+   *  private-field-branded) copy than the one nested under
+   *  @helia/libp2p/@ipshipyard/keychain, same class of cross-version mismatch as the
+   *  libp2pOptions cast below. */
+  blockstore?: unknown;
+  /** Durable libp2p/keychain bookkeeping to match `blockstore` - otherwise unrelated to
+   *  attachment bytes themselves. Typed `unknown` for the same reason as blockstore. */
+  datastore?: unknown;
+  /** Additional transport factories beyond Helia's own defaults (webSockets, etc.) -
+   *  see app/src/backend/webrtcTransport.ts, which lets a Tauri app's Helia node
+   *  actually accept inbound connections (a plain browser tab, and Helia's own
+   *  defaults alone, never can). Typed `unknown[]` for the same cross-version reason
+   *  as blockstore/datastore above. */
+  extraTransports?: unknown[];
+  /** Multiaddrs to listen on beyond Helia's defaults (none, by default - see the class
+   *  doc comment) - paired with extraTransports, since a transport with nothing to
+   *  listen on never gets its createListener() called at all. */
+  listenAddresses?: string[];
+} = {}): Promise<IpfsNode> {
   const base = createHeliaLight({
-    blockstore: new MemoryBlockstore(),
-    datastore: new MemoryDatastore(),
+    blockstore: opts.blockstore ?? new MemoryBlockstore(),
+    datastore: opts.datastore ?? new MemoryDatastore(),
     codecs: [dagCbor, dagJson, json],
     hashers: [sha512],
-  });
+  } as unknown as HeliaInit);
   const defaults = libp2pDefaults();
   // Narrower than DefaultLibp2pServices by design (see doc comment above) - cast past
   // the structural mismatch rather than fabricate stub factories for services we
   // deliberately dropped.
   const libp2pOptions = {
     ...defaults,
+    privateKey: opts.privateKey ?? defaults.privateKey,
     peerDiscovery: [],
     services: { identify: defaults.services.identify },
+    transports: [...(defaults.transports ?? []), ...(opts.extraTransports ?? [])],
+    // Explicit key present only when actually overriding - `addresses: undefined`
+    // would otherwise stomp defaults.addresses entirely (object spread doesn't skip
+    // an explicitly-assigned undefined value), silently dropping every default listen
+    // address (including the CLI/test-only default loopback TCP one) for every
+    // caller that didn't pass listenAddresses.
+    ...(opts.listenAddresses ? { addresses: { listen: opts.listenAddresses } } : {}),
   } as unknown as CreateLibp2pOptions<DefaultLibp2pServices>;
   const withNetworking = withLibp2p(withHTTP(base), libp2pOptions);
   const helia = withBitswap(withNetworking as unknown as HeliaWithLibp2p<DefaultLibp2pServices>) as unknown as IpfsNode;

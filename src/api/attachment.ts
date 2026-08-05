@@ -7,6 +7,17 @@ import type { Attachment } from '../types/index.js';
 
 export class AttachmentVerificationError extends Error {}
 
+/**
+ * Attachments at or under this size get a `sourceUrl` data: URL as a fast, always-
+ * available path (a thumbnail-sized image is cheap enough that inlining it costs
+ * little and needs no network at all). Above it, only `ipfsCid` is set - see the
+ * Attachment doc comment in src/types/index.ts for why: inlining large media into
+ * every gossiped post meant every peer that ever received it downloaded and
+ * permanently stored the full bytes, with no eviction, whether or not anyone actually
+ * viewed it.
+ */
+export const INLINE_MAX_BYTES = 50 * 1024;
+
 /** Base64-encodes bytes without Node's Buffer - the shared attachment code also runs
  *  inside the Tauri webview, where `Buffer` doesn't exist. Chunked so a multi-MB
  *  attachment never hits the argument-length limit of a single String.fromCharCode. */
@@ -66,6 +77,9 @@ function verifyAttachmentBytes(bytes: Uint8Array, attachment: Attachment): void 
  * content isn't fetched/moderation-checked synchronously at post-creation time.
  */
 export async function fetchAndVerifyAttachment(attachment: Attachment): Promise<Uint8Array> {
+  if (!attachment.sourceUrl) {
+    throw new AttachmentVerificationError('fetchAndVerifyAttachment: attachment has no sourceUrl');
+  }
   const response = await fetch(attachment.sourceUrl);
   if (!response.ok) {
     throw new AttachmentVerificationError(`fetchAndVerifyAttachment: fetch failed with status ${response.status}`);
