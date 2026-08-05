@@ -78,6 +78,21 @@ body {
   padding-left: env(safe-area-inset-left);
 }
 
+/* tauri-plugin-barcode-scanner's `windowed: true` makes the native *webview*
+ * transparent so a native camera preview shows through from behind it - it does not
+ * open a separate view. Everything this app itself paints (body's own background,
+ * QrPairingScreen's bg-bg wrapper, ScanCode's bg-surface card) still sits on top of
+ * that transparent webview and fully hides the preview unless it also goes
+ * transparent - see QrPairingScreen.tsx's ScanCode, which toggles this class on
+ * <html> for exactly the duration of an active scan. */
+html.qr-scanning,
+html.qr-scanning body,
+html.qr-scanning #root,
+html.qr-scanning .bg-bg,
+html.qr-scanning .bg-surface {
+  background: transparent !important;
+}
+
 * {
   scrollbar-width: thin;
   scrollbar-color: var(--color-surface-alt) transparent;

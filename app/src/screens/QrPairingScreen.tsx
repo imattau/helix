@@ -154,6 +154,16 @@ function ScanCode({
     }
   }, [state, client, onOpenAuthor]);
 
+  // windowed: true makes the native *webview* transparent so the camera preview
+  // shows through from behind it - our own opaque backgrounds (body, this screen's
+  // bg-bg wrapper, this card's bg-surface) still have to get out of the way for that
+  // to actually be visible - see index.css's html.qr-scanning rule.
+  useEffect(() => {
+    if (state.phase !== "scanning") return;
+    document.documentElement.classList.add("qr-scanning");
+    return () => document.documentElement.classList.remove("qr-scanning");
+  }, [state.phase]);
+
   const startScan = async () => {
     setState({ phase: "scanning" });
     try {
@@ -182,6 +192,27 @@ function ScanCode({
     }
   };
 
+  const cancelScan = async () => {
+    const { cancel } = await import("@tauri-apps/plugin-barcode-scanner");
+    await cancel().catch(() => {});
+    setState({ phase: "idle" });
+  };
+
+  if (state.phase === "scanning") {
+    // No card/background here at all - see the useEffect above, this screen (and
+    // body/#root) are transparent right now so the native camera preview is what's
+    // actually visible; a bg-surface card would just hide it again.
+    return (
+      <button
+        type="button"
+        onClick={cancelScan}
+        className="rounded-xl bg-ink/60 px-4 py-3 text-sm font-bold text-white backdrop-blur"
+      >
+        Cancel
+      </button>
+    );
+  }
+
   if (state.phase === "connecting" || state.phase === "connected") {
     return (
       <div className="flex flex-col items-center gap-3 rounded-2xl border border-border bg-surface p-8">
@@ -199,11 +230,10 @@ function ScanCode({
       <button
         type="button"
         onClick={startScan}
-        disabled={state.phase === "scanning"}
-        className="flex items-center gap-2 rounded-xl bg-accent px-4 py-3 text-sm font-bold text-white disabled:opacity-40"
+        className="flex items-center gap-2 rounded-xl bg-accent px-4 py-3 text-sm font-bold text-white"
       >
         <ScanQrCode size={18} />
-        {state.phase === "scanning" ? "Opening camera…" : "Start scanning"}
+        Start scanning
       </button>
     </div>
   );
