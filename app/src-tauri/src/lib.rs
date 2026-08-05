@@ -4,11 +4,31 @@ fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
 }
 
+/// The device's own non-loopback IPv4 addresses (e.g. a LAN 192.168.x.x/10.x.x.x
+/// address), so the frontend's TauriTcpTransport (see
+/// app/src/backend/tauriTcpTransport.ts) can build real, LAN-dialable multiaddrs for
+/// its TCP listener - neither tauri-plugin-tcp nor any other installed plugin exposes
+/// this. `if_addrs` is pure Rust (libc getifaddrs on Unix/Android), so this works
+/// identically on desktop and Android with no native Kotlin/Swift module.
+#[tauri::command]
+fn local_ipv4_addresses() -> Vec<String> {
+    if_addrs::get_if_addrs()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|iface| !iface.is_loopback())
+        .filter_map(|iface| match iface.addr {
+            if_addrs::IfAddr::V4(v4) => Some(v4.ip.to_string()),
+            _ => None,
+        })
+        .collect()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_fs::init());
+        .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_tcp::init());
 
     // tauri-plugin-barcode-scanner's entire crate body is `#![cfg(mobile)]` - it has no
     // `init()` (or anything else) on desktop targets at all, confirmed by `cargo check`
@@ -18,7 +38,7 @@ pub fn run() {
     let builder = builder.plugin(tauri_plugin_barcode_scanner::init());
 
     builder
-        .invoke_handler(tauri::generate_handler![greet])
+        .invoke_handler(tauri::generate_handler![greet, local_ipv4_addresses])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

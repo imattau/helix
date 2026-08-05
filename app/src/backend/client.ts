@@ -39,7 +39,14 @@ import type { Attachment, Genome, Helix, Follow } from "@helix/types/index.js";
 import { loadOrCreateIdentity, isPublicDiscoveryEnabled } from "./identity";
 import { createBrowserPolyPackAdapters } from "./polypackPersistence";
 import { SearchIndex } from "./searchIndex";
+import { isTauri } from "./platform";
 import type { Notification, Post, PostAttachment, User } from "../types";
+
+/** Candidate listen ports for TauriTcpTransport (see findAvailablePort there) - an
+ *  arbitrary high, unassigned range; the first free one is used, so a second Helix
+ *  instance on the same device (or anything else already bound to the first choice)
+ *  doesn't prevent startup. */
+const TAURI_TCP_CANDIDATE_PORTS = [4737, 4738, 4739, 4740, 4741, 4742, 4743, 4744, 4745, 4746];
 
 export { SpamRejectedError };
 
@@ -196,7 +203,14 @@ export class HelixClient {
     await Promise.all([this.store.loadPersistentGraphs(), this.searchIndex.load()]);
     const publicDiscovery = isPublicDiscoveryEnabled();
     this.publicDiscoveryEnabled = publicDiscovery;
-    this.node = await createHelixNode({ port: 0, privateKey: identity.privateKey, browser: true, publicDiscovery });
+    const nativeTcpTransport = publicDiscovery ? await this.createNativeTcpTransport() : undefined;
+    this.node = await createHelixNode({
+      port: 0,
+      privateKey: identity.privateKey,
+      browser: true,
+      publicDiscovery,
+      nativeTcpTransport,
+    });
     this.hlc = new HybridLogicalClock(this.node.peerId.toString());
 
     this.node.services.pubsub.subscribe(TOPICS.GENESIS);
@@ -252,6 +266,26 @@ export class HelixClient {
     // Passive directory propagation: re-announce a capped snapshot on the
     // `helix-directory` topic so peers that connect to *us* don't need a request.
     setInterval(() => this.broadcastDirectory(), DIRECTORY_BROADCAST_INTERVAL_MS);
+  }
+
+  /** A real TCP listen address for a Tauri webview (desktop or Android - see
+   *  isTauri()/tauriTcpTransport.ts), so this node doesn't depend purely on an
+   *  opportunistic circuit-relay reservation to be dialable - see createNode.ts's
+   *  nativeTcpTransport NOTE. undefined for a literal browser tab, which has no IPC
+   *  bridge to a native host capable of raw sockets at all, and undefined (with a
+   *  warning, not a thrown error) if every candidate port is somehow unavailable -
+   *  the node still starts up fine on webSockets()+circuitRelayTransport() alone.
+   */
+  private async createNativeTcpTransport() {
+    if (!isTauri()) return undefined;
+    try {
+      const { tauriTcp, findAvailablePort } = await import("./tauriTcpTransport");
+      const listenPort = await findAvailablePort(TAURI_TCP_CANDIDATE_PORTS);
+      return { transport: tauriTcp(), listenPort };
+    } catch (err) {
+      console.warn("[helix] native TCP transport unavailable - falling back to relay-only", err);
+      return undefined;
+    }
   }
 
   /** Registers under `displayName` once connect() has finished, then creates the
@@ -544,19 +578,27 @@ export class HelixClient {
 
   /**
    * This node's own dialable addresses, for showing in a QR pairing code (see
-   * QrPairingScreen.tsx). Filtered to `/p2p-circuit/` addresses specifically: this is a
-   * browser-mode node (see doConnect()'s `browser: true`), which per createNode.ts can
-   * never open a raw TCP/LAN listener at all - the only address that's ever actually
-   * dialable by a stranger is a circuit-relay reservation, which only exists once
-   * publicDiscovery has landed one (not instant - see the NAT traversal notes in
-   * createNode.ts). Empty until then; callers show a waiting state, not an error.
+   * QrPairingScreen.tsx). Two kinds, both filtered in:
+   *
+   * - `/p2p-circuit/` addresses: a circuit-relay reservation, which only exists once
+   *   publicDiscovery has landed one (not instant - see the NAT traversal notes in
+   *   createNode.ts).
+   * - Real `/ip4/<lan-ip>/tcp/<port>/` addresses from TauriTcpTransport (Tauri
+   *   desktop/Android only - see doConnect()'s createNativeTcpTransport(); a literal
+   *   browser tab never has one, per createNode.ts's "browser" NOTE). These resolve
+   *   almost immediately (no relay reservation to wait for) and, for same-LAN pairing
+   *   specifically, work with zero dependency on any relay or internet access at all.
+   *   Loopback is excluded since nothing off-device could ever dial it.
+   *
+   * Empty until at least one of these exists; callers show a waiting state, not an
+   * error.
    */
   getOwnConnectAddrs(): string[] {
     if (!this.publicDiscoveryEnabled) return [];
     return this.node
       .getMultiaddrs()
       .map((a) => a.toString())
-      .filter((a) => a.includes("/p2p-circuit/"));
+      .filter((a) => a.includes("/p2p-circuit/") || (a.includes("/tcp/") && !a.includes("/ip4/127.0.0.1/")));
   }
 
   /**

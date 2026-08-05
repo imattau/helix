@@ -1,10 +1,6 @@
 import type { PersistenceAdapter } from "@0xx0lostcause0xx0/polypack";
 import { IndexedDbPersistenceAdapter } from "./indexedDbPersistence";
-
-/** True when running inside the Tauri webview (desktop app), not a plain browser tab. */
-function isTauri(): boolean {
-  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-}
+import { isTauri } from "./platform";
 
 async function createTauriFsAdapter(storeName: string): Promise<PersistenceAdapter | undefined> {
   const { BinaryStoreAdapter } = await import("@0xx0lostcause0xx0/polypack/persistence/opfs");

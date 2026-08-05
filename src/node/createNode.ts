@@ -10,7 +10,7 @@ import { bootstrap } from '@libp2p/bootstrap';
 import { circuitRelayTransport, circuitRelayServer } from '@libp2p/circuit-relay-v2';
 import { autoNAT } from '@libp2p/autonat';
 import { dcutr } from '@libp2p/dcutr';
-import type { Ed25519PrivateKey } from '@libp2p/interface';
+import type { Ed25519PrivateKey, Transport } from '@libp2p/interface';
 
 /**
  * NOTE on genome_exists / DHT: the pseudocode's `network.genome_exists()` was originally
@@ -120,6 +120,16 @@ export async function createHelixNode(opts: {
    *  nothing for libp2p to correctly auto-detect here. Merged into libp2p's own
    *  `addresses.announce`, additive to (not replacing) the real listen addresses. */
   announceAddresses?: string[];
+  /** A libp2p transport factory (plus the port it will listen on) that can actually
+   *  open sockets, unlike webSockets()/circuitRelayTransport() - the only options
+   *  available in a literal browser tab (see the "browser" NOTE above). A Tauri
+   *  webview (desktop or Android) has a native Rust host process that CAN open raw
+   *  sockets even though the webview's own JS still can't; app/src/backend/
+   *  tauriTcpTransport.ts bridges that gap over Tauri's IPC. Only meaningful when
+   *  `browser` and `publicDiscovery` are both set - a plain browser tab has no such
+   *  bridge, and this is pointless without `publicDiscovery`'s NAT-traversal services
+   *  (autoNAT/dcutr) to make use of a real listen address once there is one. */
+  nativeTcpTransport?: { transport: (components: unknown) => Transport; listenPort: number };
 }) {
   // Split into two full calls (rather than one config with conditionally-spread
   // service keys) because kad-dht declares `ping` as a *required* component
@@ -127,6 +137,7 @@ export async function createHelixNode(opts: {
   // doesn't satisfy that, even when publicDiscovery is true at runtime.
   if (opts.browser) {
     if (opts.publicDiscovery) {
+      const native = opts.nativeTcpTransport;
       return createLibp2p({
         privateKey: opts.privateKey,
         // The bare `/p2p-circuit` address is circuit-relay-v2's "search" form - it's
@@ -137,8 +148,15 @@ export async function createHelixNode(opts: {
         // support, yet zero reservations were attempted, because nothing had ever asked
         // the transport to listen. Adding just the transport to `transports` wires in
         // the capability to use a reservation once made; it doesn't request one.
-        addresses: { listen: ['/p2p-circuit'] },
-        transports: [webSockets(), circuitRelayTransport()],
+        //
+        // The native TCP listen address (when present) is additive: a real, LAN-
+        // dialable (and WAN-dialable given port forwarding/no NAT) address alongside
+        // the opportunistic circuit-relay one, so same-network pairing (see
+        // QrPairingScreen) doesn't have to wait on any relay reservation at all.
+        addresses: { listen: native ? ['/p2p-circuit', `/ip4/0.0.0.0/tcp/${native.listenPort}`] : ['/p2p-circuit'] },
+        transports: native
+          ? [webSockets(), circuitRelayTransport(), native.transport]
+          : [webSockets(), circuitRelayTransport()],
         streamMuxers: [yamux()],
         connectionEncrypters: [noise()],
         peerDiscovery: [bootstrap({ list: PUBLIC_IPFS_BOOTSTRAP_PEERS })],

@@ -8,6 +8,7 @@
     "opener:default",
     "fs:default",
     "fs:allow-appdata-write-recursive",
-    "barcode-scanner:default"
+    "barcode-scanner:default",
+    "tcp:default"
   ]
 }

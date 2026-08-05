@@ -22,6 +22,17 @@ tauri = { version = "2", features = [] }
 tauri-plugin-fs = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-barcode-scanner = "2"
+# Raw TCP sockets exposed to the webview frontend - pure Rust/tokio, no native Kotlin/
+# Swift module, so it cross-compiles for Android like any other Rust dependency. Lets
+# the app get a real, LAN-dialable (and WAN-dialable given port forwarding) listen
+# address instead of depending purely on circuit-relay reservations - see
+# app/src/backend/tauriTcpTransport.ts.
+tauri-plugin-tcp = "0.1"
+# Enumerates local network interface IPv4 addresses - needed to build real dialable
+# multiaddrs for the TCP listener above, since neither tauri-plugin-tcp nor any other
+# installed plugin exposes the device's own IP (see tauriTcpTransport.ts's
+# localIpv4Addresses()). Pure Rust (libc getifaddrs on Unix/Android), no native module.
+if-addrs = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

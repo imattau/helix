@@ -88,6 +88,21 @@ in the original design.
   HOP-capable relay it's connected to — confirmed live against the public network.
   See "Running a relay anchor" below for the dedicated relay/rendezvous service that
   makes this reliable rather than opportunistic.
+- **Native TCP for Tauri desktop/Android** (`app/src/backend/tauriTcpTransport.ts`,
+  `src/node/createNode.ts`'s `nativeTcpTransport` option): a literal browser tab has no
+  way to open a raw socket at all — no `net`, no listen capability — which is why the
+  app is otherwise limited to `webSockets()` + circuit-relay, same as any browser page.
+  A Tauri app (desktop or Android; the underlying plugin doesn't support iOS) is
+  different: its JS still runs in a webview with the same restriction, but it has a
+  native Rust host process alongside it that *can* open sockets. `TauriTcpTransport`
+  bridges that gap over Tauri's IPC (`@kuyoonjo/tauri-plugin-tcp`) and a small
+  `local_ipv4_addresses` command (`app/src-tauri/src/lib.rs`, since no installed plugin
+  exposes the device's own IP), giving the app a real, LAN-dialable listen address in
+  addition to the opportunistic relay one. This is what makes same-network QR pairing
+  (see `QrPairingScreen`) instant and relay/internet-independent, and gives `dcutr`
+  hole-punching something real to upgrade a relayed connection to. It doesn't help a
+  NAT'd device be dialable from *outside* its LAN on its own — that still depends on the
+  relay path above.
 - **Media & long-form attachments** (`src/crypto/postHash.ts`, `src/api/attachment.ts`):
   posts can reference an `Attachment` (SHA-256 hash + MIME type + size + source URL)
   instead of cramming long-form content into the tweet-length `content` field. The
