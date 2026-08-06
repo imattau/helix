@@ -6,7 +6,7 @@ import { peerIdFromString } from '@libp2p/peer-id';
 import type { HelixNode } from './createNode.js';
 import type { HelixStore } from '../store/memoryStore.js';
 import type { Genome, Helix } from '../types/index.js';
-import type { Stream } from '@libp2p/interface';
+import { isPeerId, type Stream } from '@libp2p/interface';
 
 /**
  * Directory sync: a way for a peer to learn about the rest of the network's users
@@ -246,7 +246,21 @@ export async function requestDirectory(
   // runOnLimitedConnection required here too - see registerDirectoryHandler's doc
   // comment for why (a relay-discovered peer, dialed directly with no hole-punch, is
   // a "limited" connection until libp2p says otherwise).
-  const stream = await node.dialProtocol(toDialable(peer), DIRECTORY_PROTOCOL, { signal, runOnLimitedConnection: true });
+  //
+  // Prefer opening a stream on an already-open connection over dialProtocol(peerId).
+  // dialProtocol(peerId) resolves addresses via the peerStore, NOT via the connection
+  // manager's open connections - confirmed live: a peer we'd *just* connected to (its
+  // connection provably open and "open" per node.getConnections()) still failed
+  // dialProtocol with "The dial request has no valid addresses", because nothing had
+  // populated the peerStore with a dialable multiaddr for it (typical for a peer that
+  // reached us by dialing IN over a circuit-relay connection - we never dialed out to
+  // it ourselves, so we never recorded an address for it). Reusing the live
+  // Connection's own newStream() sidesteps address resolution entirely.
+  const dialable = toDialable(peer);
+  const existing = isPeerId(dialable) ? node.getConnections(dialable)[0] : undefined;
+  const stream = existing
+    ? await existing.newStream(DIRECTORY_PROTOCOL, { signal, runOnLimitedConnection: true })
+    : await node.dialProtocol(dialable, DIRECTORY_PROTOCOL, { signal, runOnLimitedConnection: true });
   await stream.sink([new TextEncoder().encode(JSON.stringify(opts))]);
   await stream.closeWrite().catch(() => {});
   const bytes = await readAll(stream, 32 << 20);
