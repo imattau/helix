@@ -62,6 +62,21 @@ in the original design.
   with any populated peer seeds hundreds of genomes plus their recent posts. The DHT
   still finds *peers*, not users; directory data is what turns "peers found" into
   "people you can follow."
+- **Relay peer directory** (`src/cli/relay.ts`, `src/node/peerAddressBook.ts`): the
+  public DHT's own provide/find rendezvous turned out to be genuinely unreliable at
+  internet scale — confirmed hands-on: two healthy, correctly-announcing peers (a real
+  browser client and a real CLI node, both with well-populated DHT routing tables)
+  failed to find each other across multiple rounds. A relay, by contrast, is a direct
+  single-hop connection to every peer that bootstraps through it, making it a far more
+  reliable rendezvous point for peers sharing one. It passively listens for `helix-
+  genesis` (PoW-verified, same as any peer) and a `helix-peer-addr` broadcast (each peer
+  self-reporting its own dialable multiaddrs, cross-checked against gossipsub's
+  cryptographically verified sender to block spoofing), and serves the combined
+  genome+multiaddr directory over the existing `/helix/directory/1.0.0` protocol —
+  genome-only, no post content ever passes through the relay. Address entries expire
+  after 10 minutes without a refresh (`PeerAddressBook`); the app re-broadcasts its own
+  address periodically as a keep-alive, not just once per connection, so a still-online
+  peer's entry never goes stale.
 - **Public-DHT default bootstrap** (`app/src/backend/client.ts`): the app joins the
   public IPFS/libp2p DHT by default (client-mode `@libp2p/kad-dht` + the four official
   `bootstrap.libp2p.io` WebSocket peers — see `src/node/createNode.ts`), finds other
@@ -86,8 +101,8 @@ in the original design.
   to the same `@libp2p/interface` v2 line as `@libp2p/kad-dht` for the CVE reason above.
   A NAT'd node gets a real, publicly-dialable `/p2p-circuit` address through any
   HOP-capable relay it's connected to — confirmed live against the public network.
-  See "Running a relay anchor" below for the dedicated relay/rendezvous service that
-  makes this reliable rather than opportunistic.
+  See "Running a relay anchor" below for the dedicated relay service that makes this
+  reliable rather than opportunistic.
 - **Native TCP for Tauri desktop/Android** (`app/src/backend/tauriTcpTransport.ts`,
   `src/node/createNode.ts`'s `nativeTcpTransport` option): a literal browser tab has no
   way to open a raw socket at all — no `net`, no listen capability — which is why the
@@ -169,9 +184,17 @@ peer's `/ws` multiaddr before building/running.
 `src/cli/relay.ts` is a standalone daemon, separate from the `peer:a`/`peer:b` demo
 above (which has hardcoded alice/bob roles and a forged-genesis demonstration - neither
 applies to long-lived network infrastructure with no user or content of its own). It
-only ever runs the libp2p node: DHT rendezvous (see "Public-DHT default bootstrap") plus
-the circuit-relay-v2 **server** role (see "NAT traversal"), so NAT'd Helix peers can get
-a reservation through it and be dialed by strangers.
+only ever runs the libp2p node: the circuit-relay-v2 **server** role (see "NAT
+traversal"), so NAT'd Helix peers can get a reservation through it and be dialed by
+strangers, plus the peer directory (see "Relay peer directory" above). Deliberately
+**not** on the public DHT — nothing ever discovers a relay that way (every path to one
+requires already knowing its address), and joining turned out to be actively harmful:
+constant incoming connections from the wider public swarm pushed libp2p's own
+`ConnectionPruner` into evicting connections (including legitimate client sessions) once
+past its default 300-connection cap, confirmed by tracing a real connection resetting
+every 60-70s while the relay was DHT-joined. `maxConnections` is also raised well above
+that default, since sustaining many simultaneous client connections is the relay's whole
+job.
 
 ```bash
 npm run relay -- --port 4001 --data-dir ./.helix-relay-data

@@ -184,29 +184,43 @@ async function readAll(stream: Stream, maxBytes = 1 << 20): Promise<Uint8Array> 
 }
 
 /** Serves directory requests over `/helix/directory/1.0.0`. `getMultiaddrs` is
- *  forwarded to buildDirectorySnapshot() - see its doc comment. */
+ *  forwarded to buildDirectorySnapshot() - see its doc comment.
+ *
+ *  `runOnLimitedConnection: true` is required, not optional - a circuit-relay
+ *  connection (e.g. two peers that found each other through a relay's directory -
+ *  see relay.ts's PeerAddressBook - and dialed each other's self-reported
+ *  `/p2p-circuit/` address directly, with no direct hole-punch) is marked "limited"
+ *  by libp2p until/unless it's upgraded to a direct one, and BOTH the handler
+ *  registration (here) and the dial (requestDirectory below) must opt in or
+ *  `newStream()` throws `LimitedConnectionError` outright - confirmed by hitting
+ *  exactly that error dialing a relay-discovered peer directly and reading
+ *  libp2p's own Connection.newStream() source, not guessed. */
 export function registerDirectoryHandler(
   node: HelixNode,
   store: HelixStore,
   getMultiaddrs?: (peerId: string) => string[] | undefined,
 ): void {
   node
-    .handle(DIRECTORY_PROTOCOL, async ({ stream }) => {
-      try {
-        let req: DirectoryRequest = {};
+    .handle(
+      DIRECTORY_PROTOCOL,
+      async ({ stream }) => {
         try {
-          req = JSON.parse(new TextDecoder().decode(await readAll(stream, 1 << 16)));
-        } catch {
-          // unparseable/empty request - fall back to defaults
+          let req: DirectoryRequest = {};
+          try {
+            req = JSON.parse(new TextDecoder().decode(await readAll(stream, 1 << 16)));
+          } catch {
+            // unparseable/empty request - fall back to defaults
+          }
+          const snapshot = buildDirectorySnapshot(store, req, getMultiaddrs);
+          await stream.sink([encodeDirectory(snapshot)]);
+        } catch (err) {
+          console.warn('[helix] directory handler failed', err instanceof Error ? err.message : err);
+        } finally {
+          await stream.close().catch(() => {});
         }
-        const snapshot = buildDirectorySnapshot(store, req, getMultiaddrs);
-        await stream.sink([encodeDirectory(snapshot)]);
-      } catch (err) {
-        console.warn('[helix] directory handler failed', err instanceof Error ? err.message : err);
-      } finally {
-        await stream.close().catch(() => {});
-      }
-    })
+      },
+      { runOnLimitedConnection: true },
+    )
     .catch((err) => {
       console.warn('[helix] failed to register directory handler', err instanceof Error ? err.message : err);
     });
@@ -229,7 +243,10 @@ export async function requestDirectory(
   opts: DirectoryRequest = {},
   signal?: AbortSignal,
 ): Promise<DirectorySnapshot> {
-  const stream = await node.dialProtocol(toDialable(peer), DIRECTORY_PROTOCOL, { signal });
+  // runOnLimitedConnection required here too - see registerDirectoryHandler's doc
+  // comment for why (a relay-discovered peer, dialed directly with no hole-punch, is
+  // a "limited" connection until libp2p says otherwise).
+  const stream = await node.dialProtocol(toDialable(peer), DIRECTORY_PROTOCOL, { signal, runOnLimitedConnection: true });
   await stream.sink([new TextEncoder().encode(JSON.stringify(opts))]);
   await stream.closeWrite().catch(() => {});
   const bytes = await readAll(stream, 32 << 20);

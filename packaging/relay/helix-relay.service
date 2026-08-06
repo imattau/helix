@@ -1,5 +1,5 @@
 [Unit]
-Description=Helix DHT rendezvous + circuit-relay anchor
+Description=Helix circuit-relay anchor + peer directory
 Documentation=https://github.com/helix-project/helix
 After=network-online.target
 Wants=network-online.target

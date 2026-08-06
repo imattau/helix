@@ -20,7 +20,6 @@ import type { Server } from 'node:http';
 import { generateKeyPair, privateKeyFromProtobuf, privateKeyToProtobuf } from '@libp2p/crypto/keys';
 import type { Ed25519PrivateKey } from '@libp2p/interface';
 import { createHelixNode } from '../node/createNode.js';
-import { announceAndVerifyRendezvous } from '../node/rendezvous.js';
 import { startRelayPageServer } from './relayPage.js';
 import { TOPICS } from '../node/pubsubTopics.js';
 import { decodeGenesis, decodePeerAddr } from '../node/messages.js';
@@ -30,14 +29,17 @@ import { registerDirectoryHandler } from '../node/directory.js';
 import { PeerAddressBook } from '../node/peerAddressBook.js';
 
 /**
- * A standalone circuit-relay-v2 + DHT-rendezvous anchor: the always-on, genuinely
- * publicly-reachable node that lets NAT'd Helix peers (see src/node/createNode.ts's
- * NAT traversal NOTE) get a `/p2p-circuit` reservation and be dialed by strangers, and
- * that other peers can find via the public DHT without needing a bootstrap peer of
- * their own. Deliberately not src/cli/peer.ts with extra flags: peer.ts is a two-party
- * demo (hardcoded alice/bob roles, a forged-genesis demonstration, a fixed posting
- * loop) - none of that applies to a long-lived piece of network infrastructure that
- * has no user, posts, or genome of its own. This only ever runs the libp2p node itself.
+ * A standalone circuit-relay-v2 anchor: the always-on, genuinely publicly-reachable
+ * node that lets NAT'd Helix peers (see src/node/createNode.ts's NAT traversal NOTE)
+ * get a `/p2p-circuit` reservation and be dialed by strangers, and that serves a
+ * genome+multiaddr peer directory (see registerDirectoryHandler below) to anyone
+ * that bootstraps through it. Deliberately not on the public DHT - see createNode.ts's
+ * NOTE on `relayServer` not requiring `publicDiscovery` for why that turned out to be
+ * actively harmful rather than useful. Deliberately not src/cli/peer.ts with extra
+ * flags either: peer.ts is a two-party demo (hardcoded alice/bob roles, a forged-
+ * genesis demonstration, a fixed posting loop) - none of that applies to a long-lived
+ * piece of network infrastructure that has no user, posts, or genome of its own. This
+ * only ever runs the libp2p node itself.
  *
  * Deployment: see packaging/relay/ for the systemd unit, config file, and install
  * script this is meant to run under.
@@ -101,10 +103,6 @@ function pickBootstrapAddr(addrs: string[], proxy: string | undefined): string |
   return addrs.find((a) => a.includes('/ws')) ?? addrs[0];
 }
 
-/** How often the relay re-announces its rendezvous key - provider records expire on
- *  the DHT (see src/node/rendezvous.ts). */
-const DHT_REANNOUNCE_INTERVAL_MS = 30 * 60_000;
-
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const port = Number(args.port ?? process.env.HELIX_RELAY_PORT ?? DEFAULT_PORT);
@@ -121,7 +119,6 @@ async function main() {
   const node = await createHelixNode({
     port,
     privateKey,
-    publicDiscovery: true,
     relayServer: true,
     ...(proxy ? { announceAddresses: [toAnnounceMultiaddr(proxy)] } : {}),
   });
@@ -203,16 +200,6 @@ async function main() {
   }
   process.once('SIGINT', () => void shutdown(0));
   process.once('SIGTERM', () => void shutdown(0));
-
-  console.log('[helix-relay] joining the public DHT and announcing rendezvous...');
-  const verified = await announceAndVerifyRendezvous(node, AbortSignal.timeout(180_000)).catch(() => false);
-  console.log(`[helix-relay] rendezvous announce ${verified ? 'confirmed' : 'not yet confirmed (will keep retrying)'}`);
-
-  setInterval(() => {
-    announceAndVerifyRendezvous(node, AbortSignal.timeout(60_000))
-      .then((ok) => console.log(`[helix-relay] rendezvous re-announce ${ok ? 'confirmed' : 'failed'}`))
-      .catch((err) => console.warn(`[helix-relay] rendezvous re-announce error: ${err instanceof Error ? err.message : err}`));
-  }, DHT_REANNOUNCE_INTERVAL_MS).unref();
 }
 
 process.on('unhandledRejection', (err) => {

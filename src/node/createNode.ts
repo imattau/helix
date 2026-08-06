@@ -68,9 +68,37 @@ import type { Ed25519PrivateKey, Transport } from '@libp2p/interface';
  * sides know about each other. Same @libp2p/interface v2 pin as kad-dht (see the CVE
  * note above) - all three are on their last v2-compatible major (circuit-relay-v2 3.x,
  * autonat/dcutr 2.x), not their newest, for exactly the same interface-compatibility
- * reason. Bundled with `publicDiscovery` rather than as its own flag: relaying/hole-
- * punching only matters once a node is reachable to strangers on the public internet in
- * the first place, which is what publicDiscovery opts into.
+ * reason. `autoNAT`/`dcutr` stay bundled with `publicDiscovery` (only useful once a
+ * node is reachable to strangers on the public internet at all), but `relayServer`
+ * (see its own param doc) is deliberately independent of it - see the next NOTE.
+ *
+ * NOTE on `relayServer` not requiring `publicDiscovery` (i.e. no DHT for a relay): it
+ * used to be bundled the same way autoNAT/dcutr are, on the reasoning that a relay is
+ * also a `publicDiscovery` node. In practice this was actively harmful: nothing in
+ * this codebase ever *discovers* a relay via the public DHT - every path to one (the
+ * build-time default, Settings' Bootstrap Server, a QR scan, a deep link) requires
+ * already knowing its address - so a relay joining the DHT bought nothing while
+ * exposing it to constant incoming connections from the wider public swarm. Combined
+ * with libp2p's own default 300-connection cap, that pushed its ConnectionPruner into
+ * continuously evicting connections (including genuine Helix client sessions - see
+ * RELAY_MAX_CONNECTIONS's own comment) to make room. Confirmed hands-on: a real,
+ * otherwise-idle connection between two Helix peers reset (yamux GoAway) roughly
+ * every 60-70s while dialed through a DHT-joined relay. A `relayServer` node now runs
+ * only circuit-relay-v2 + gossipsub + identify + ping - no kadDHT, no bootstrap peer
+ * discovery, no autoNAT/dcutr.
+ *
+ * NOTE on `runOnLimitedConnection: true` (every gossipsub() call below): a circuit-relay
+ * connection is marked "limited" by libp2p until (if ever) dcutr upgrades it to a direct
+ * one - and @chainsafe/libp2p-gossipsub refuses to even negotiate its own wire protocol
+ * over a limited connection unless this is explicitly set, defaulting to off. Without it,
+ * two peers that found each other through a relay (QR pairing, or the relay's own peer
+ * directory - see src/cli/relay.ts) and dialed one another directly can still do
+ * request/response protocols like directory sync (which independently needs the same
+ * flag - see directory.ts), but never mesh on any gossipsub topic over that connection -
+ * so live posts/follows/genesis broadcasts silently never arrive between them. Confirmed
+ * the hard way: a real CLI peer and a real browser client found each other via the relay
+ * directory and connected directly, directory sync worked, but a post published on one
+ * side never reached the other over that connection until this was added.
  */
 
 /**
@@ -121,6 +149,20 @@ const RELAY_RESERVATION_LIMITS = {
   defaultDurationLimit: 10 * 60 * 1000, // 10 minutes
 };
 
+/**
+ * libp2p's own ConnectionManager default (300 - see MAX_CONNECTIONS in
+ * node_modules/libp2p/dist/src/connection-manager/constants.js) is sized for an
+ * ordinary peer, not a piece of shared infrastructure meant to hold open a
+ * connection to every client that has ever bootstrapped through it. Raised well
+ * above any realistic near-term deployment size rather than tuned to a measured
+ * number, for the same reason RELAY_RESERVATION_LIMITS is generous: the cost of a
+ * too-low cap (ConnectionPruner silently evicting legitimate client connections to
+ * make room, exactly what was observed and traced before this was added) is far
+ * worse than the cost of a too-high one (a relay process holding open more sockets
+ * than it strictly needs to).
+ */
+const RELAY_MAX_CONNECTIONS = 10_000;
+
 export async function createHelixNode(opts: {
   port: number;
   privateKey: Ed25519PrivateKey;
@@ -131,12 +173,14 @@ export async function createHelixNode(opts: {
    *  traversal NOTE above), since they're only useful once a node is dialable by
    *  strangers at all. Opt-in; off by default (and for every test in this repo). */
   publicDiscovery?: boolean;
-  /** Also run the circuit-relay-v2 SERVER role, so other (NAT'd) Helix peers can get a
-   *  reservation on this node and be dialed via a `/p2p-circuit` address through it.
-   *  Only meaningful - and only worth enabling - on a node that's itself genuinely
-   *  publicly reachable (a real public IP with the listen port actually forwarded); a
-   *  NAT'd node offering to relay for others is pointless, since nothing could dial
-   *  *it* either. Ignored unless `publicDiscovery` is also set. Opt-in; off by default. */
+  /** Runs the circuit-relay-v2 SERVER role (+ gossipsub/identify/ping, no DHT - see the
+   *  NOTE on `relayServer` above), so other (NAT'd) Helix peers can get a reservation
+   *  on this node and be dialed via a `/p2p-circuit` address through it. Only
+   *  meaningful - and only worth enabling - on a node that's itself genuinely publicly
+   *  reachable (a real public IP with the listen port actually forwarded); a NAT'd node
+   *  offering to relay for others is pointless, since nothing could dial *it* either.
+   *  Independent of `publicDiscovery` (checked first, below) - ignored if `browser` is
+   *  set. Opt-in; off by default. */
   relayServer?: boolean;
   /** Public-facing multiaddrs to announce instead of relying on auto-detected/observed
    *  ones - for a relayServer node running behind a reverse proxy (see src/cli/relay.ts's
@@ -186,7 +230,7 @@ export async function createHelixNode(opts: {
         connectionEncrypters: [noise()],
         peerDiscovery: [bootstrap({ list: PUBLIC_IPFS_BOOTSTRAP_PEERS })],
         services: {
-          pubsub: gossipsub({ allowPublishToZeroTopicPeers: true, emitSelf: false }),
+          pubsub: gossipsub({ allowPublishToZeroTopicPeers: true, emitSelf: false, runOnLimitedConnection: true }),
           identify: identify(),
           ping: ping(),
           dht: kadDHT(PUBLIC_DHT_INIT),
@@ -201,7 +245,7 @@ export async function createHelixNode(opts: {
       streamMuxers: [yamux()],
       connectionEncrypters: [noise()],
       services: {
-        pubsub: gossipsub({ allowPublishToZeroTopicPeers: true, emitSelf: false }),
+        pubsub: gossipsub({ allowPublishToZeroTopicPeers: true, emitSelf: false, runOnLimitedConnection: true }),
         identify: identify(),
       },
     });
@@ -215,35 +259,47 @@ export async function createHelixNode(opts: {
   const wsPort = opts.port === 0 ? 0 : opts.port + 1;
   const announce = opts.announceAddresses !== undefined ? { announce: opts.announceAddresses } : {};
   const addresses = { listen: [`/ip4/0.0.0.0/tcp/${opts.port}`, `/ip4/0.0.0.0/tcp/${wsPort}/ws`], ...announce };
+
+  if (opts.relayServer) {
+    // Deliberately independent of `publicDiscovery` (no kadDHT/bootstrap/autoNAT/
+    // dcutr/mdns here at all) - see the top-of-file NOTE on why a relay joining the
+    // public DHT turned out to be actively harmful: nothing in this codebase actually
+    // *discovers* a relay via the DHT (every path to one - the build-time default,
+    // Settings' Bootstrap Server, a QR scan, a deep link - requires already knowing
+    // its address), so DHT participation bought nothing while flooding the relay with
+    // constant incoming connections from the wider public swarm. Combined with
+    // libp2p's own default 300-connection cap, that pushed ConnectionPruner (see
+    // node_modules/libp2p/dist/src/connection-manager/connection-pruner.js) into
+    // continuously evicting connections to make room - including genuine Helix client
+    // sessions, since nothing tags them as more valuable than a random DHT crawler.
+    // Confirmed hands-on: a real, otherwise-idle connection between two Helix peers
+    // reset (yamux GoAway) roughly every 60-70s while dialed through a
+    // publicDiscovery+relayServer node; removing DHT participation removes the
+    // constant churn that was triggering it. `maxConnections` is also raised well
+    // above the 300 default - a relay's whole job is sustaining many simultaneous
+    // client connections, unlike an ordinary peer.
+    //
+    // No `/p2p-circuit` listen address here: a relayServer node is meant to be the
+    // reachable anchor (see the NAT traversal NOTE above) - it already has a real
+    // listen address, so it has no reason to go find a *different* relay to hop
+    // through itself.
+    return createLibp2p({
+      privateKey: opts.privateKey,
+      addresses,
+      transports: [tcp(), webSockets(), circuitRelayTransport()],
+      streamMuxers: [yamux()],
+      connectionEncrypters: [noise()],
+      connectionManager: { maxConnections: RELAY_MAX_CONNECTIONS },
+      services: {
+        pubsub: gossipsub({ allowPublishToZeroTopicPeers: true, emitSelf: false, runOnLimitedConnection: true }),
+        identify: identify(),
+        ping: ping(),
+        relay: circuitRelayServer({ reservations: RELAY_RESERVATION_LIMITS }),
+      },
+    });
+  }
+
   if (opts.publicDiscovery) {
-    // Split on relayServer for the same reason the browser/publicDiscovery split above
-    // exists (see the comment on createHelixNode's call site history): a conditionally-
-    // spread `relay?:` key would still type-check here since nothing declares `relay` as
-    // a *required* service dependency, but a full literal keeps this consistent with the
-    // rest of the file rather than mixing both styles.
-    if (opts.relayServer) {
-      // No `/p2p-circuit` listen address here: a relayServer node is meant to be the
-      // reachable anchor (see the NAT traversal NOTE above) - it already has a real
-      // listen address, so it has no reason to go find a *different* relay to hop
-      // through itself.
-      return createLibp2p({
-        privateKey: opts.privateKey,
-        addresses,
-        transports: [tcp(), webSockets(), circuitRelayTransport()],
-        streamMuxers: [yamux()],
-        connectionEncrypters: [noise()],
-        peerDiscovery: [mdns(), bootstrap({ list: PUBLIC_IPFS_BOOTSTRAP_PEERS })],
-        services: {
-          pubsub: gossipsub({ allowPublishToZeroTopicPeers: true, emitSelf: false }),
-          identify: identify(),
-          ping: ping(),
-          dht: kadDHT(PUBLIC_DHT_INIT),
-          autoNAT: autoNAT(),
-          dcutr: dcutr(),
-          relay: circuitRelayServer({ reservations: RELAY_RESERVATION_LIMITS }),
-        },
-      });
-    }
     // The bare `/p2p-circuit` address is what actually triggers circuitRelayTransport's
     // reservation flow - see the identical comment on the browser+publicDiscovery
     // branch above, where this was confirmed against the live public network.
@@ -255,7 +311,7 @@ export async function createHelixNode(opts: {
       connectionEncrypters: [noise()],
       peerDiscovery: [mdns(), bootstrap({ list: PUBLIC_IPFS_BOOTSTRAP_PEERS })],
       services: {
-        pubsub: gossipsub({ allowPublishToZeroTopicPeers: true, emitSelf: false }),
+        pubsub: gossipsub({ allowPublishToZeroTopicPeers: true, emitSelf: false, runOnLimitedConnection: true }),
         identify: identify(),
         ping: ping(),
         dht: kadDHT(PUBLIC_DHT_INIT),
@@ -272,7 +328,7 @@ export async function createHelixNode(opts: {
     connectionEncrypters: [noise()],
     peerDiscovery: [mdns()],
     services: {
-      pubsub: gossipsub({ allowPublishToZeroTopicPeers: true, emitSelf: false }),
+      pubsub: gossipsub({ allowPublishToZeroTopicPeers: true, emitSelf: false, runOnLimitedConnection: true }),
       identify: identify(),
     },
   });

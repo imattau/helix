@@ -81,6 +81,15 @@ export { SpamRejectedError };
 /** How often to re-run DHT rendezvous discovery so peers that announce later are found. */
 const REDISCOVERY_INTERVAL_MS = 3 * 60_000;
 
+/** How often to re-broadcast this device's own PEER_ADDR - a keep-alive, not just a
+ *  one-shot-per-connection announcement (see announcePeerAddr()'s doc comment for
+ *  why: a relay's PeerAddressBook (src/node/peerAddressBook.ts) expires an entry
+ *  that's gone too long without a refresh, so a peer that's still genuinely online
+ *  needs to keep re-asserting "I'm still here" independent of whether any *new*
+ *  connection happens to form. Comfortably under the relay's own TTL (10 minutes)
+ *  so a couple of missed/delayed cycles don't cause a spurious expiry. */
+const PEER_ADDR_KEEPALIVE_INTERVAL_MS = 3 * 60_000;
+
 const AVATAR_PALETTE = ["#5e50f9", "#6366f1", "#d946ef", "#f59e0b", "#22c55e", "#ec4899", "#0ea5e9"];
 
 function avatarColorFor(genome: string): string {
@@ -323,6 +332,10 @@ export class HelixClient {
     // Passive directory propagation: re-announce a capped snapshot on the
     // `helix-directory` topic so peers that connect to *us* don't need a request.
     setInterval(() => this.broadcastDirectory(), DIRECTORY_BROADCAST_INTERVAL_MS);
+
+    // Keep-alive: see PEER_ADDR_KEEPALIVE_INTERVAL_MS's doc comment - a relay's
+    // PeerAddressBook expires entries that go too long without a refresh.
+    setInterval(() => this.announcePeerAddr(), PEER_ADDR_KEEPALIVE_INTERVAL_MS);
   }
 
   /** A real TCP listen address for a Tauri webview (desktop or Android - see
@@ -457,7 +470,13 @@ export class HelixClient {
    *  peerIds a receiver would otherwise need a DHT peer-routing lookup to resolve -
    *  see directory.ts's DirectoryEntry.multiaddrs. Harmless (just unheard) to publish
    *  even when nothing's listening. No-ops until getOwnConnectAddrs() has something
-   *  to say - same empty-check reasoning as announceIpfsAddr(). */
+   *  to say - same empty-check reasoning as announceIpfsAddr().
+   *
+   *  Called both on every peer:connect (a fresh connection is exactly when a peer
+   *  needs this) and on its own periodic timer (PEER_ADDR_KEEPALIVE_INTERVAL_MS) -
+   *  the latter is what keeps a long-lived, already-connected session from expiring
+   *  out of a relay's PeerAddressBook just because no *new* connection has happened
+   *  in a while. */
   private announcePeerAddr(): void {
     const multiaddrs = this.getOwnConnectAddrs();
     if (multiaddrs.length === 0) return;

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PeerAddressBook } from '../../src/node/peerAddressBook.js';
 
 describe('PeerAddressBook', () => {
@@ -30,5 +30,34 @@ describe('PeerAddressBook', () => {
     expect(book.size).toBe(3);
     expect(book.get('a')).toBeUndefined();
     expect(book.get('d')).toEqual(['4']);
+  });
+
+  describe('TTL expiry', () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    it('expires an entry that has not been refreshed within the TTL', () => {
+      const book = new PeerAddressBook(5_000, 60_000);
+      book.set('stale-peer', ['/ip4/1.2.3.4/tcp/1']);
+      vi.advanceTimersByTime(60_001);
+      expect(book.get('stale-peer')).toBeUndefined();
+    });
+
+    it('does not expire an entry refreshed (re-set) within the TTL window', () => {
+      const book = new PeerAddressBook(5_000, 60_000);
+      book.set('live-peer', ['/ip4/1.2.3.4/tcp/1']);
+      vi.advanceTimersByTime(50_000);
+      book.set('live-peer', ['/ip4/1.2.3.4/tcp/1']); // keep-alive re-broadcast
+      vi.advanceTimersByTime(50_000); // total 100s since first set, but only 50s since refresh
+      expect(book.get('live-peer')).toEqual(['/ip4/1.2.3.4/tcp/1']);
+    });
+
+    it('an expired entry also frees up capacity (does not count toward size once expired)', () => {
+      const book = new PeerAddressBook(5_000, 60_000);
+      book.set('old', ['1']);
+      vi.advanceTimersByTime(60_001);
+      expect(book.get('old')).toBeUndefined(); // triggers lazy deletion
+      expect(book.size).toBe(0);
+    });
   });
 });
